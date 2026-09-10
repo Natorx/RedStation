@@ -12,7 +12,8 @@
 		"db:migrate": "drizzle-kit migrate",
 		"db:push": "drizzle-kit push",
 		"db:studio": "drizzle-kit studio",
-		"seed": "tsx scripts/seed.ts"
+		"seed": "tsx scripts/seed.ts",
+		"seed:workspace": "tsx scripts/seed-workspace.ts"
 	},
 	"dependencies": {
 		"@nestjs/common": "^12.0.1",
