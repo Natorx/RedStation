@@ -354,7 +354,7 @@
 						</div>
 						{#if mentionOpen}
 							<div class="mention-list">
-								{#each MEMBERS as m}
+								{#each MEMBERS() as m}
 									<button
 										class="mention-item"
 										type="button"

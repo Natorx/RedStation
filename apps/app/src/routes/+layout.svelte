@@ -1,8 +1,28 @@
 <script lang="ts">
 	import '../app.css';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { ME, MEMBERS, loadMembers, logout, restoreSession, session } from '$lib/stores/workspace.svelte';
 
 	let { children } = $props();
+
+	// 登录页自身不渲染应用外壳（侧栏 / 顶栏）
+	const isAuthPage = $derived(page.url.pathname.startsWith('/login'));
+
+	// 启动时用本地 token 恢复会话（拉 /api/auth/me 校验）
+	$effect(() => {
+		restoreSession();
+	});
+
+	// 登录后加载团队成员，供 @ 提及与发布者下拉使用
+	$effect(() => {
+		if (session.loggedIn && MEMBERS().length === 0) loadMembers();
+	});
+
+	// 会话恢复完成后才做路由守卫，避免刷新页面时误跳登录页
+	$effect(() => {
+		if (!session.loading && !session.loggedIn && !isAuthPage) goto('/login');
+	});
 
 	const nav = $state([
 		{ href: '/', label: '概览', icon: 'grid' },
@@ -46,6 +66,30 @@
 	let drawerOpen = $state(false);
 	let closingDrawer = $state(false);
 
+	// ===== 左下角信息名片 + 账号菜单（含退出登录）=====
+	let accountOpen = $state(false);
+	let closingAccount = $state(false);
+
+	function openAccount() {
+		closingAccount = false;
+		accountOpen = true;
+	}
+
+	function closeAccount() {
+		if (!accountOpen || closingAccount) return;
+		// 先播退出动画，再真正移除
+		closingAccount = true;
+		setTimeout(() => {
+			closingAccount = false;
+			accountOpen = false;
+		}, 240);
+	}
+
+	async function doLogout() {
+		await logout();
+		await goto('/login');
+	}
+
 	function openDrawer() {
 		closingDrawer = false;
 		drawerOpen = true;
@@ -66,6 +110,9 @@
 	}
 </script>
 
+{#if isAuthPage}
+	{@render children()}
+{:else}
 <div class="shell">
 	<aside class="sidebar">
 		<a class="brand" href="/">
@@ -113,13 +160,22 @@
 		</nav>
 
 		<div class="sidebar-foot">
-			<div class="foot-user">
-				<span class="avatar">FW</span>
+			<button
+				type="button"
+				class="foot-user"
+				class:open={accountOpen}
+				onclick={openAccount}
+				aria-haspopup="menu"
+				aria-expanded={accountOpen}
+				title="账号"
+			>
+				<span class="avatar" style="background:{ME()?.color ?? '#33333c'}">{ME()?.initials ?? '--'}</span>
 				<div class="foot-meta">
-					<span class="foot-name">Fofow</span>
-					<span class="foot-role">本地工作台</span>
+					<span class="foot-name">{ME()?.name ?? '未登录'}</span>
+					<span class="foot-role">{ME()?.role ?? ''}</span>
 				</div>
-			</div>
+				<span class="foot-more" aria-hidden="true">⋯</span>
+			</button>
 			<div class="foot-hint">所有数据保存在本地</div>
 		</div>
 	</aside>
@@ -227,6 +283,61 @@
 	</aside>
 {/if}
 
+<!-- 账号弹窗：点击左下角信息名片打开，可跳转个人页或退出登录 -->
+{#if accountOpen}
+	<div class="drawer-backdrop" class:closing={closingAccount} onclick={closeAccount}></div>
+	<div class="account-pop" class:closing={closingAccount} role="dialog" aria-modal="true" aria-labelledby="account-title">
+		<header class="acc-head">
+			<span class="acc-avatar" style="background:{ME()?.color ?? '#33333c'}">{ME()?.initials ?? '--'}</span>
+			<div class="acc-id">
+				<h2 id="account-title">{ME()?.name ?? '未登录'}</h2>
+				<span class="acc-sub">{ME()?.role ?? ''}{ME()?.title ? ` · ${ME()!.title}` : ''}</span>
+			</div>
+			<button class="drawer-close acc-close" onclick={closeAccount} aria-label="关闭" title="关闭">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M18 6L6 18M6 6l12 12" />
+				</svg>
+			</button>
+		</header>
+
+		<p class="acc-email">{ME()?.email ?? ''} · 加入于 {ME()?.createdAt?.slice(0, 10) ?? '—'}</p>
+
+		<ul class="acc-menu" role="menu">
+			<li>
+				<a class="acc-item" role="menuitem" href="/me" onclick={closeAccount}>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<circle cx="12" cy="8" r="4" />
+						<path d="M4 21a8 8 0 0116 0" />
+					</svg>
+					<span>个人资料</span>
+				</a>
+			</li>
+			<li>
+				<a class="acc-item" role="menuitem" href="/settings" onclick={closeAccount}>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<circle cx="12" cy="12" r="3" />
+						<path d="M4 20V10M10 20V4M16 20v-7M21 20H3" />
+					</svg>
+					<span>工作区设置</span>
+				</a>
+			</li>
+		</ul>
+
+		<footer class="acc-foot">
+			<button class="acc-logout" onclick={doLogout}>
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M15 17l5-5-5-5" />
+					<path d="M20 12H9" />
+					<path d="M12 4H6a2 2 0 00-2 2v12a2 2 0 002 2h6" />
+				</svg>
+				退出登录
+			</button>
+		</footer>
+	</div>
+{/if}
+
+{/if}
+
 <style>
 	.shell {
 		display: grid;
@@ -316,10 +427,170 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
+		width: 100%;
 		padding: 10px;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-md);
 		background: var(--bg-2);
+		color: inherit;
+		font-family: inherit;
+		text-align: left;
+		cursor: pointer;
+		transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+	}
+	.foot-user:hover {
+		border-color: var(--line-strong);
+		background: var(--bg-3);
+	}
+	.foot-user:active {
+		transform: scale(0.99);
+	}
+	.foot-user.open {
+		border-color: rgba(220, 38, 38, 0.45);
+		background: var(--accent-soft);
+	}
+	.foot-more {
+		margin-left: auto;
+		color: var(--text-2);
+		font-size: 1rem;
+		line-height: 1;
+	}
+	.foot-user:hover .foot-more {
+		color: var(--text-1);
+	}
+
+	/* ===== 账号弹窗 ===== */
+	.account-pop {
+		position: fixed;
+		left: calc(var(--space-4) + 4px);
+		bottom: 96px;
+		z-index: 61;
+		width: 272px;
+		padding: var(--space-4);
+		background: var(--bg-1);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-lg);
+		box-shadow: 0 26px 60px rgba(0, 0, 0, 0.55);
+		animation: pop-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+	}
+	@keyframes pop-in {
+		from {
+			opacity: 0;
+			transform: translateY(8px) scale(0.98);
+		}
+	}
+	@keyframes pop-out {
+		to {
+			opacity: 0;
+			transform: translateY(8px) scale(0.98);
+		}
+	}
+	.account-pop.closing {
+		animation: pop-out 0.22s ease forwards;
+	}
+	.acc-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+	}
+	.acc-avatar {
+		flex: none;
+		width: 40px;
+		height: 40px;
+		display: grid;
+		place-items: center;
+		border-radius: 12px;
+		color: #fff;
+		font-size: 0.86rem;
+		font-weight: 800;
+	}
+	.acc-id {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		line-height: 1.3;
+	}
+	.acc-id h2 {
+		margin: 0;
+		font-size: 1rem;
+	}
+	.acc-sub {
+		font-size: 0.72rem;
+		color: var(--text-2);
+	}
+	.acc-close {
+		position: static;
+		margin-left: auto;
+		width: 28px;
+		height: 28px;
+	}
+	.acc-email {
+		margin: var(--space-3) 0 var(--space-3);
+		padding-bottom: var(--space-3);
+		border-bottom: 1px solid var(--line);
+		font-size: 0.74rem;
+		color: var(--text-2);
+		word-break: break-all;
+	}
+	.acc-menu {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.acc-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 9px 10px;
+		border-radius: 10px;
+		color: var(--text-0);
+		font-size: 0.86rem;
+	}
+	.acc-item:hover {
+		background: var(--bg-2);
+		color: var(--red-500);
+	}
+	.acc-item svg {
+		width: 17px;
+		height: 17px;
+		flex: none;
+		color: var(--text-2);
+	}
+	.acc-item:hover svg {
+		color: var(--red-500);
+	}
+	.acc-foot {
+		margin-top: var(--space-3);
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--line);
+	}
+	.acc-logout {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		width: 100%;
+		padding: 9px;
+		border: 1px solid rgba(220, 38, 38, 0.35);
+		border-radius: 10px;
+		background: rgba(220, 38, 38, 0.1);
+		color: #f87171;
+		font-family: inherit;
+		font-size: 0.86rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.16s ease, color 0.16s ease;
+	}
+	.acc-logout:hover {
+		background: var(--red-600);
+		color: #fff;
+	}
+	.acc-logout svg {
+		width: 17px;
+		height: 17px;
 	}
 	.avatar {
 		width: 34px;

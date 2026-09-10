@@ -3,9 +3,12 @@
  * 概览页与项目页共用同一份 projects/tasks 状态，
  * 在任一页面勾选、增删任务都会同步反映到另一页面。
  *
- * 目前数据为 mock；对接后端时把 projects 换成接口返回值、
- * 把下方几个变更函数改成对应的请求即可，字段结构保持不变。
+ * 用户/会话/成员已对接后端（见 src/lib/api/client.ts）；
+ * 项目与任务仍为 mock，待后端对应模块就绪后按同样方式替换。
  */
+
+import { authApi, clearToken, getToken, setToken, usersApi } from '$lib/api/client';
+import type { ApiMember, ApiUser, UpdateProfilePayload } from '$lib/api/client';
 
 export type TaskItem = {
 	title: string;
@@ -74,47 +77,105 @@ export const COLOR_OPTIONS = ['red', 'violet', 'amber', 'green', 'cyan', 'pink']
 /** 当前登录用户，新建任务的默认发布者 */
 export const CURRENT_USER = 'Fofow';
 
-/** 团队成员（mock，用于 @ 提及）；对接后端后换成接口返回值 */
-export type Member = {
-	name: string;
-	role: string;
-	color: string;
-};
+// ===== 会话状态（对接后端 /api/auth/*）=====
 
-export const MEMBERS: Member[] = [
-	{ name: 'Fofow', role: '负责人', color: '#dc2626' },
-	{ name: 'Mo', role: '前端', color: '#6366f1' },
-	{ name: 'Lily', role: '设计', color: '#ec4899' },
-	{ name: '奇奇', role: '后端', color: '#22c55e' },
-	{ name: 'TuneOasis', role: '运维', color: '#06b6d4' },
-	{ name: 'GameStorm', role: '服务端', color: '#f59e0b' }
-];
+/**
+ * 会话容器：用对象包住可变字段，这样导出的是常量引用，
+ * 但内部字段（loggedIn/loading/me/members）仍可自由赋值并保持响应式。
+ */
+export const session = $state({
+	loggedIn: false,
+	loading: true,
+	/** 当前登录用户资料，来自 GET /api/auth/me；未登录为 null */
+	me: null as ApiUser | null,
+	/** 团队成员，来自 GET /api/users/members，供 @ 提及与发布者下拉使用 */
+	members: [] as ApiMember[]
+});
 
-/** 当前用户的资料（mock，对接后端后换成 /api/me 返回值） */
-export const ME = {
-	/** 八位数用户 ID */
-	id: '10248571',
-	name: 'Fofow',
-	initials: 'FW',
-	role: '负责人',
-	title: '全栈工程师',
-	color: '#dc2626',
-	/** 所在团队 */
-	teams: ['Red 系核心团队'],
-	/** 邮箱 / 联系方式 */
-	email: 'fofow@redstation.local',
-	/** 加入时间 */
-	joined: '2026-08-01',
-	/** 权限清单 */
-	permissions: [
-		{ name: '项目管理', desc: '新建、编辑与归档项目', granted: true },
-		{ name: '任务分配', desc: '创建任务并指派给团队成员', granted: true },
-		{ name: '发布动态', desc: '发布工作汇报与通知', granted: true },
-		{ name: '团队管理', desc: '邀请成员、调整角色', granted: true },
-		{ name: '报表导出', desc: '导出统计报表与原始数据', granted: false },
-		{ name: '系统设置', desc: '修改工作区与部署配置', granted: false }
-	]
-};
+/**
+ * 当前登录用户资料；未登录为 null。
+ * 模块顶层不能导出 $derived 状态，故用 getter 函数暴露当前值。
+ */
+export function ME(): ApiUser | null {
+	return session.me;
+}
+
+/** 团队成员列表（会话中的 members 字段） */
+export function MEMBERS(): ApiMember[] {
+	return session.members;
+}
+
+/** 登录：调后端换 token，并写入当前用户 */
+export async function login(uid: string, password: string): Promise<void> {
+	const { token, user } = await authApi.login(uid, password);
+	setToken(token);
+	session.me = user;
+	session.loggedIn = true;
+	session.loading = false;
+}
+
+/**
+ * 退出登录：通知后端（无状态 JWT，失败也不阻塞）并清本地状态
+ */
+export async function logout(): Promise<void> {
+	try {
+		await authApi.logout();
+	} finally {
+		clearToken();
+		session.me = null;
+		session.members = [];
+		session.loggedIn = false;
+		session.loading = false;
+	}
+}
+
+/**
+ * 应用启动时恢复会话：有 token 就拉 /api/auth/me 验证并填充用户
+ * token 失效（401）则静默清掉，交给路由守卫跳登录页
+ */
+export async function restoreSession(): Promise<void> {
+	if (!getToken()) {
+		session.loggedIn = false;
+		session.loading = false;
+		return;
+	}
+
+	try {
+		session.me = await authApi.me();
+		session.loggedIn = true;
+	} catch {
+		clearToken();
+		session.me = null;
+		session.loggedIn = false;
+	} finally {
+		session.loading = false;
+	}
+}
+
+/** 拉取团队成员列表；未登录或失败时静默保留空数组 */
+export async function loadMembers(): Promise<void> {
+	try {
+		session.members = await usersApi.members();
+	} catch {
+		session.members = [];
+	}
+}
+
+/**
+ * 修改自己的资料：成功后用后端返回的最新数据刷新 session.me，
+ * 侧栏名片、/me 页等引用处会自动同步。
+ */
+export async function updateProfile(payload: UpdateProfilePayload): Promise<void> {
+	const user = await authApi.updateMe(payload);
+	session.me = user;
+	// 昵称或头像色变了，成员列表也要跟着刷新
+	await loadMembers();
+}
+
+/** 修改自己的密码；成功后原 token 仍有效，无需重新登录 */
+export async function changeMyPassword(currentPassword: string, newPassword: string): Promise<void> {
+	await authApi.changeMyPassword(currentPassword, newPassword);
+}
 
 /** 任务优先级 */
 export type Priority = 'high' | 'medium' | 'low';
@@ -246,7 +307,7 @@ export const POST_TYPES: { value: PostType; label: string }[] = [
 
 /** 从正文里提取被 @ 的成员名 */
 export function extractMentions(text: string) {
-	return MEMBERS.filter((m) => text.includes('@' + m.name)).map((m) => m.name);
+	return MEMBERS().filter((m) => text.includes('@' + m.name)).map((m) => m.name);
 }
 
 /** 今天的日期与“刚刚”文案，用于新建任务 */

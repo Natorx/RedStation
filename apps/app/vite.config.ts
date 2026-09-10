@@ -16,5 +16,14 @@ export default defineConfig({
 			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
 			adapter: adapter()
 		})
-	]
+	],
+	server: {
+		// 开发期把 /api 转发到 NestJS 后端，避免跨域
+		proxy: {
+			'/api': {
+				target: process.env.VITE_API_TARGET ?? 'http://127.0.0.1:3001',
+				changeOrigin: true
+			}
+		}
+	}
 });

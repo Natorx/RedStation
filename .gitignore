@@ -4,3 +4,11 @@ build/
 .svelte-kit/
 *.log
 .DS_Store
+
+# 环境变量（含数据库密码、JWT 密钥），仅提交 .env.example
+.env
+.env.local
+.env.*.local
+
+# TypeScript 增量构建缓存
+*.tsbuildinfo

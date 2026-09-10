@@ -5,6 +5,7 @@
 		addTodo,
 		removeTodo,
 		MEMBERS,
+		ME,
 		TODO_TYPES,
 		PRIORITIES,
 		type TodoType,
@@ -74,13 +75,17 @@
 	let formError = $state('');
 	let nText = $state('');
 	let nType = $state<TodoType>('开发');
-	let nAuthor = $state(MEMBERS[0]?.name ?? '');
+	// 发布者默认取当前登录用户；成员列表由根布局异步加载，此处用派生兜底
 	let nPriority = $state<Priority>('medium');
+	let nAuthor = $state('');
+
+	const defaultAuthor = $derived(ME()?.name ?? MEMBERS()[0]?.name ?? '');
+	const authorOptions = $derived(MEMBERS().length ? MEMBERS() : ME() ? [ME()!] : []);
 
 	function openForm() {
 		nText = '';
 		nType = '开发';
-		nAuthor = MEMBERS[0]?.name ?? '';
+		nAuthor = defaultAuthor;
 		nPriority = 'medium';
 		formError = '';
 		formOpen = true;
@@ -305,7 +310,7 @@
 			<label class="field">
 				<span class="field-label">发布者</span>
 				<select class="input select" bind:value={nAuthor}>
-					{#each MEMBERS as m}
+					{#each authorOptions as m}
 						<option value={m.name}>{m.name} · {m.role}</option>
 					{/each}
 				</select>

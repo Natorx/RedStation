@@ -10,6 +10,9 @@
     "dev": "pnpm run dev:app & pnpm run dev:server",
     "build": "pnpm -r build",
     "check:app": "pnpm --filter @redstation/app check",
-    "typecheck:server": "pnpm --filter @redstation/server typecheck"
+    "typecheck:server": "pnpm --filter @redstation/server typecheck",
+    "db:generate": "pnpm --filter @redstation/server db:generate",
+    "db:migrate": "pnpm --filter @redstation/server db:migrate",
+    "seed": "pnpm --filter @redstation/server seed"
   }
 }
