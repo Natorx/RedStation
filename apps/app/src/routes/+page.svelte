@@ -795,18 +795,25 @@
 		position: relative;
 		flex: 1;
 		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
 	}
 	.act-body p {
 		font-size: 0.9rem;
 		color: var(--text-1);
+		/* 长文本/超长单词换行，避免撑破卡片 */
+		word-break: break-word;
 	}
-	/* 类型 / 关联项目 tag 行，位于该条动态右上角 */
+	/*
+	 * 类型 / 关联项目 tag 行。
+	 * 原先用 absolute 悬浮在右上角，正文变长时会与 tag 重叠，
+	 * 改为普通流式布局：tag 独占一行排在正文上方，正文自然从其下方开始。
+	 */
 	.act-tags {
-		position: absolute;
-		top: 0;
-		right: 0;
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 6px;
 	}
 	.act-proj,
