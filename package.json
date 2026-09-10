@@ -1,0 +1,15 @@
+{
+  "name": "redstation",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev:app": "pnpm --filter @redstation/app dev",
+    "dev:server": "pnpm --filter @redstation/server dev",
+    "dev": "pnpm run dev:app & pnpm run dev:server",
+    "build": "pnpm -r build",
+    "check:app": "pnpm --filter @redstation/app check",
+    "typecheck:server": "pnpm --filter @redstation/server typecheck"
+  }
+}
