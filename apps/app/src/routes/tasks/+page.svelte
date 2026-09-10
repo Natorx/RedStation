@@ -1,18 +1,23 @@
 <script lang="ts">
 	import {
-		todos,
+		TODOS,
 		toggleTodo,
 		addTodo,
 		removeTodo,
 		MEMBERS,
 		ME,
+		todoColor,
 		TODO_TYPES,
 		PRIORITIES,
 		type TodoType,
 		type Priority
 	} from '$lib/stores/workspace.svelte';
+	import { ApiError } from '$lib/api/client';
 
-	const PRIO_LABEL: Record<Priority, string> = { high: '高', medium: '中', low: '低' };
+	const PRIO_LABEL: Record<string, string> = { high: '高', medium: '中', low: '低' };
+
+	/** 待办列表（后端数据，容器在 store 里） */
+	const todos = $derived(TODOS());
 
 	// ===== 筛选 =====
 	let filterType = $state<'all' | TodoType>('all');
@@ -67,12 +72,23 @@
 		return `${d} 天前`;
 	}
 
+	/** 截止时间文案：把后端的 ISO 时间转成「今天 / 2 天」这类相对描述 */
+	function relDue(iso: string): string {
+		const due = new Date(iso).getTime();
+		const days = Math.ceil((due - Date.now()) / DAY);
+		if (days < 0) return '已逾期';
+		if (days === 0) return '今天';
+		if (days === 1) return '明天';
+		return `${days} 天`;
+	}
+
 	/** 按创建时间倒序（最新在前） */
 	const sorted = $derived([...filtered].sort((a, b) => b.createdAt - a.createdAt));
 
 	// ===== 新建任务 =====
 	let formOpen = $state(false);
 	let formError = $state('');
+	let submitting = $state(false);
 	let nText = $state('');
 	let nType = $state<TodoType>('开发');
 	// 发布者默认取当前登录用户；成员列表由根布局异步加载，此处用派生兜底
@@ -97,8 +113,19 @@
 			formError = '请填写任务内容';
 			return;
 		}
-		addTodo(nText, nType, nAuthor, nPriority);
-		formOpen = false;
+		submitting = true;
+		formError = '';
+		// 提交后端；失败时把后端的中文错误显示出来
+		addTodo(nText, nType, nAuthor, nPriority)
+			.then(() => {
+				formOpen = false;
+			})
+			.catch((err: unknown) => {
+				formError = err instanceof ApiError ? err.message : '创建失败，请稍后重试';
+			})
+			.finally(() => {
+				submitting = false;
+			});
 	}
 
 	// 统计
@@ -220,14 +247,13 @@
 			<p class="empty">没有符合条件的任务。</p>
 		{:else}
 			<ul class="todo-list">
-				{#each sorted as todo (todo.text + todo.createdAt)}
-					{@const i = todos.indexOf(todo)}
+				{#each sorted as todo (todo.id)}
 					<li class="todo-item {todo.done ? 'done' : ''}">
 						<label class="todo-check">
 							<input
 								type="checkbox"
 								checked={todo.done}
-								onchange={() => toggleTodo(i)}
+								onchange={() => toggleTodo(todo.id)}
 								aria-label={todo.text}
 							/>
 							<span class="todo-box" aria-hidden="true"></span>
@@ -237,14 +263,14 @@
 						</span>
 						<span class="todo-text">{todo.text}</span>
 						<span class="todo-meta">{relTime(todo.createdAt)}</span>
-						{#if todo.due}<span class="todo-due">{todo.due}前</span>{/if}
+						{#if todo.dueAt}<span class="todo-due">{relDue(todo.dueAt)}</span>{/if}
 						<span class="author">{todo.author}</span>
-						<span class="tag {todo.color}">{todo.type}</span>
+						<span class="tag {todoColor(todo.type)}">{todo.type}</span>
 						<button
 							class="del"
 							title="删除任务"
 							aria-label="删除任务"
-							onclick={() => removeTodo(i)}
+							onclick={() => removeTodo(todo.id)}
 						>
 							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 								<path d="M18 6L6 18M6 6l12 12" />

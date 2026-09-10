@@ -3,13 +3,13 @@
 	import {
 		ME,
 		MEMBERS,
-		projects,
+		PROJECTS,
 		updateProfile,
 		changeMyPassword
 	} from '$lib/stores/workspace.svelte';
 
-	// 我负责的项目（对接后端后可换成按 owner 过滤）
-	const myProjects = $derived(projects);
+	// 我负责的项目（后端暂无 owner 归属概念，暂展示全部）
+	const myProjects = $derived(PROJECTS());
 
 	const myTaskStats = $derived({
 		total: myProjects.reduce((n, p) => n + p.tasks.length, 0),

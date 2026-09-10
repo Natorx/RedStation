@@ -1,70 +1,94 @@
 <script lang="ts">
 	import {
-		projects as board,
+		PROJECTS,
+		TODOS,
+		ACTIVITIES,
 		toggleProjectTask,
-		todos,
 		toggleTodo,
 		MEMBERS,
-		POST_TYPES,
+		todoColor,
 		extractMentions,
-		type ProjectItem,
+		markProjectRead,
+		publishActivity,
+		POST_TYPES,
 		type PostType
 	} from '$lib/stores/workspace.svelte';
+	import { ApiError, type ApiProject } from '$lib/api/client';
+
+	/** 后端数据（容器在 store，用函数取值保持响应式） */
+	const board = $derived(PROJECTS());
+	const todos = $derived(TODOS());
+	const activity = $derived(ACTIVITIES());
 
 	// 任务列表：与任务页共用同一份待办数据
 	const runningCount = $derived(todos.filter((t) => !t.done).length);
 	const doneCount = $derived(todos.filter((t) => t.done).length);
 
-	// 顶部数据卡片：任务数来自待办清单，项目数来自项目面板
+	// 顶部数据卡片：任务数与项目数取自后端数据
+	// 「平均专注时长」前端无数据来源，暂用占位并标注为静态值
 	const stats = $derived([
-		{ label: '进行中的任务', value: String(runningCount), trend: '+6', up: true },
-		{ label: '已完成', value: String(doneCount), trend: '+18%', up: true },
-		{ label: '项目', value: String(board.length), trend: '+2', up: true },
-		{ label: '平均专注时长', value: '4.2h', trend: '-8%', up: false }
+		{ label: '进行中的任务', value: String(runningCount), trend: '', up: true },
+		{ label: '已完成', value: String(doneCount), trend: '', up: true },
+		{ label: '项目', value: String(board.length), trend: '', up: true },
+		{
+			label: '平均专注时长',
+			value: '—',
+			trend: '',
+			up: false,
+			/** 该指标暂无数据来源，置灰提示 */
+			placeholder: true
+		}
 	]);
 
-	type ProjCard = ProjectItem;
+	type ProjCard = ApiProject;
 
 	// 项目详情弹窗
-	// 存项目名而不是对象引用，项目页改动后弹窗内容自动同步
-	let activeLabel = $state<string | null>(null);
-	const activeProj = $derived(board.find((p) => p.label === activeLabel) ?? null);
+	// 存项目 id 而不是对象引用，项目页改动后弹窗内容自动同步
+	let activeId = $state<number | null>(null);
+	const activeProj = $derived(board.find((p) => p.id === activeId) ?? null);
 
 	function openProject(proj: ProjCard) {
-		// 即将查看，清掉“有新任务”提示
-		proj.unread = false;
-		activeLabel = proj.label;
+		// 即将查看，清掉“有新任务”提示（同步到后端）
+		markProjectRead(proj.id);
+		activeId = proj.id;
 	}
 
 	function closeProjectPopup() {
-		activeLabel = null;
+		activeId = null;
 	}
 
-	function toggleProjTask(proj: ProjCard, i: number) {
-		toggleProjectTask(proj.label, i);
+	function toggleProjTask(taskId: number) {
+		toggleProjectTask(taskId);
 	}
-
-	const activity = $state([
-		{ who: 'T', name: 'TuneOasis', action: 'Tune Oasis 本地测试', time: '2026-9-9 42分钟前', color: '#06b6d4', project: 'Redcloud', type: 'report', mentions: [] },
-		{ who: 'R', name: 'Fofow', action: 'RedStation 立项，@Mo 跟进前端', time: '2026-9-9 24分钟前', color: '#6366f1', project: 'RedStation', type: 'report', mentions: ['Mo'] },
-		{ who: 'G', name: 'GameStorm', action: '今晚 22:00 服务端重启，请注意保存进度', time: '2026-9-9 2小时前', color: '#22c55e', project: '', type: 'notice', mentions: [] }
-	]);
 
 	// 优先级显示文案
 	const PRIO_LABEL: Record<string, string> = { high: '高', medium: '中', low: '低' };
+
+	/** 截止时间文案：把后端的 ISO 时间转成「今天 / 2 天」这类相对描述 */
+	function relDue(iso: string): string {
+		const due = new Date(iso).getTime();
+		const now = Date.now();
+		const days = Math.ceil((due - now) / (24 * 60 * 60 * 1000));
+		if (days < 0) return '已逾期';
+		if (days === 0) return '今天';
+		if (days === 1) return '明天';
+		return `${days} 天`;
+	}
 
 	// 发布动态：表单内容
 	let draft = $state('');
 	let draftVisible = $state('team');
 	// 关联的项目（来自项目面板），空字符串表示不关联
-	let draftProject = $state('');
+	// 关联项目 id，null 表示不关联（后端用 projectId）
+	let draftProject = $state<number | null>(null);
 	// 动态类型：工作汇报 / 通知
 	let draftType = $state<PostType>('report');
 	// @ 提及面板开关
 	let mentionOpen = $state(false);
-
-	// 发布者头像用的首字母、姓名与配色
-	const AUTHOR = { who: 'F', name: 'Fofow', color: '#dc2626' };
+	// 发布中标记，避免重复提交
+	let publishing = $state(false);
+	// 发布失败时的错误文案
+	let publishError = $state('');
 
 	// 在光标处插入 @成员
 	function insertMention(name: string) {
@@ -88,27 +112,31 @@
 
 	let mentionInput = $state<HTMLTextAreaElement | null>(null);
 
-	function publishActivity() {
+	/** 发布动态到后端；成功后由 store 插到列表最前 */
+	async function submitActivity() {
 		const text = draft.trim();
-		if (!text) return;
-		const d = new Date();
-		// 新动态插到最前面，立即出现在「动态」里
-		activity.unshift({
-			who: AUTHOR.who,
-			name: AUTHOR.name,
-			action: text,
-			time: `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`,
-			color: AUTHOR.color,
-			project: draftProject,
-			type: draftType,
-			mentions: extractMentions(text)
-		});
-		draft = '';
-		draftVisible = 'team';
-		draftProject = '';
-		draftType = 'report';
-		mentionOpen = false;
-		closeDrawer();
+		if (!text || publishing) return;
+		publishing = true;
+		publishError = '';
+		try {
+			await publishActivity({
+				content: text,
+				type: draftType,
+				visibility: draftVisible === 'private' ? 'private' : 'team',
+				projectId: draftProject,
+				mentions: extractMentions(text)
+			});
+			draft = '';
+			draftVisible = 'team';
+			draftProject = null;
+			draftType = 'report';
+			mentionOpen = false;
+			closeDrawer();
+		} catch (err) {
+			publishError = err instanceof ApiError ? err.message : '发布失败，请稍后重试';
+		} finally {
+			publishing = false;
+		}
 	}
 
 	let drawerOpen = $state(false);
@@ -172,20 +200,20 @@
 				<a class="link" href="/tasks">全部任务 →</a>
 			</header>
 			<div class="todo-list">
-				{#each todos as todo, i}
+				{#each todos as todo (todo.id)}
 					<label class="todo-item {todo.done ? 'done' : ''}">
 						<input
 							type="checkbox"
 							checked={todo.done}
-							onchange={() => toggleTodo(i)}
+							onchange={() => toggleTodo(todo.id)}
 							aria-label={todo.text}
 						/>
 						<span class="todo-box" aria-hidden="true"></span>
 						<span class="prio {todo.priority}" title="优先级">{PRIO_LABEL[todo.priority]}</span>
 						<span class="todo-text">{todo.text}</span>
-						{#if todo.due}<span class="todo-due">{todo.due}前</span>{/if}
+						{#if todo.dueAt}<span class="todo-due">{relDue(todo.dueAt)}</span>{/if}
 						<span class="todo-author-sm">{todo.author}</span>
-						<span class="todo-tag {todo.color}">{todo.type}</span>
+						<span class="todo-tag {todoColor(todo.type)}">{todo.type}</span>
 					</label>
 				{/each}
 			</div>
@@ -275,13 +303,13 @@
 				</p>
 				{#if activeProj.tasks && activeProj.tasks.length > 0}
 					<ul class="todo-list proj-pt-list">
-						{#each activeProj.tasks as task, ti}
+						{#each activeProj.tasks as task (task.id)}
 							<li class="todo-item {task.done ? 'done' : ''}">
 								<label class="todo-check">
 									<input
 										type="checkbox"
 										checked={task.done}
-										onchange={() => toggleProjTask(activeProj!, ti)}
+										onchange={() => toggleProjTask(task.id)}
 										aria-label={task.title}
 									/>
 									<span class="todo-box" aria-hidden="true"></span>
@@ -372,9 +400,9 @@
 					<label class="field">
 						<span class="field-label">关联项目（可选）</span>
 						<select class="input select" bind:value={draftProject}>
-							<option value="">不关联</option>
+							<option value={null}>不关联</option>
 							{#each board as proj}
-								<option value={proj.label}>{proj.label} · {proj.tag}</option>
+								<option value={proj.id}>{proj.label} · {proj.tag}</option>
 							{/each}
 						</select>
 					</label>
@@ -396,13 +424,21 @@
 							>
 						</div>
 					</div>
+
+					{#if publishError}
+						<p class="form-error">{publishError}</p>
+					{/if}
 				</div>
 			</div>
 
 			<footer class="drawer-foot">
 				<button class="btn btn-ghost-foot" onclick={closeDrawer}>取消</button>
-				<button class="btn btn-primary-foot" onclick={publishActivity} disabled={!draft.trim()}>
-					发布动态
+				<button
+					class="btn btn-primary-foot"
+					onclick={submitActivity}
+					disabled={!draft.trim() || publishing}
+				>
+					{publishing ? '发布中…' : '发布动态'}
 				</button>
 			</footer>
 		</aside>

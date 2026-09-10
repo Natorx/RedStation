@@ -1,51 +1,74 @@
 <script lang="ts">
 	import {
-		projects,
+		PROJECTS,
 		addProject,
 		updateProject,
 		addProjectTask,
 		toggleProjectTask,
 		removeProjectTask,
+		markProjectRead,
 		STACK_OPTIONS,
 		UI_OPTIONS,
 		COLOR_OPTIONS,
-		type ProjectItem,
 		type ProjectUI
 	} from '$lib/stores/workspace.svelte';
+	import { ApiError, type ApiProject } from '$lib/api/client';
+
+	/** 项目列表（后端数据） */
+	const projects = $derived(PROJECTS());
 
 	// 当前选中的项目
-	let activeLabel = $state(projects[0]?.label ?? '');
+	// 用 id 定位：改名后仍能正确跟随，也不会与其它项目混淆
+	let activeId = $state<number | null>(null);
 	let newTask = $state('');
 	let inputEl = $state<HTMLInputElement | null>(null);
+	let taskError = $state('');
+	let addingTask = $state(false);
 
-	const active = $derived(projects.find((p) => p.label === activeLabel) ?? projects[0]);
+	/** 当前项目：优先用选中的 id，未选中时回落到第一个 */
+	const active = $derived(projects.find((p) => p.id === activeId) ?? projects[0] ?? null);
 
 	const totalTasks = $derived(projects.reduce((n, p) => n + p.tasks.length, 0));
 	const doneTasks = $derived(
 		projects.reduce((n, p) => n + p.tasks.filter((t) => t.done).length, 0)
 	);
 
-	function selectProject(p: ProjectItem) {
-		p.unread = false;
-		activeLabel = p.label;
+	function selectProject(p: ApiProject) {
+		// 打开即清除未读角标（同步到后端）
+		markProjectRead(p.id);
+		activeId = p.id;
 	}
 
 	function submitTask(e: SubmitEvent) {
 		e.preventDefault();
-		if (!active) return;
-		addProjectTask(active.label, newTask);
-		newTask = '';
-		inputEl?.focus();
+		if (!active || addingTask) return;
+		if (!newTask.trim()) return;
+		addingTask = true;
+		taskError = '';
+		addProjectTask(active.id, newTask)
+			.then(() => {
+				newTask = '';
+				inputEl?.focus();
+			})
+			.catch((err: unknown) => {
+				taskError = err instanceof ApiError ? err.message : '添加失败，请稍后重试';
+			})
+			.finally(() => {
+				addingTask = false;
+			});
 	}
 
 	// ===== 项目表单（新建 / 编辑共用）=====
 	let formOpen = $state(false);
 	let formError = $state('');
 	// 正在编辑的项目名；null 表示新建
-	let editingLabel = $state<string | null>(null);
+	// 正在编辑的项目 id；null 表示新建
+	let editingId = $state<number | null>(null);
+	// 保存中标记，避免重复提交
+	let saving = $state(false);
 
-	const formTitle = $derived(editingLabel ? '编辑项目' : '新建项目');
-	const formSubmitText = $derived(editingLabel ? '保存修改' : '创建项目');
+	const formTitle = $derived(editingId !== null ? '编辑项目' : '新建项目');
+	const formSubmitText = $derived(editingId !== null ? '保存修改' : '创建项目');
 
 	let fLabel = $state('');
 	let fTag = $state('');
@@ -74,15 +97,15 @@
 
 	function openForm() {
 		resetForm();
-		editingLabel = null;
+		editingId = null;
 		formOpen = true;
 	}
 
 	// 用已有项目的数据打开表单
-	function openEdit(p: ProjectItem) {
+	function openEdit(p: ApiProject) {
 		fLabel = p.label;
 		fTag = p.tag;
-		fUi = p.ui;
+		fUi = p.ui as ProjectUI;
 		fPurpose = p.purpose;
 		fIntro = p.intro;
 		fStack = [...p.stack];
@@ -91,14 +114,14 @@
 		fDeployed = p.deployed;
 		fColor = p.color;
 		formError = '';
-		editingLabel = p.label;
+		editingId = p.id;
 		detailOpen = false;
 		formOpen = true;
 	}
 
 	function closeForm() {
 		formOpen = false;
-		editingLabel = null;
+		editingId = null;
 		resetForm();
 	}
 
@@ -129,17 +152,13 @@
 		fFrameworks = fFrameworks.filter((x) => x !== f);
 	}
 
-	function submitProject(e: SubmitEvent) {
+	/** 新建或保存项目；重名等业务错误由后端返回中文文案 */
+	async function submitProject(e: SubmitEvent) {
 		e.preventDefault();
+		if (saving) return;
 		const label = fLabel.trim();
 		if (!label) {
 			formError = '请填写项目名';
-			return;
-		}
-		// 重名校验（编辑时允许保持原名）
-		const clash = projects.some((p) => p.label === label && p.label !== editingLabel);
-		if (clash) {
-			formError = '项目名已存在';
 			return;
 		}
 		// 输入框里还没回车的框架一并收进来
@@ -159,34 +178,35 @@
 			deployed: fDeployed
 		};
 
-		if (editingLabel) {
-			const ok = updateProject(editingLabel, payload);
-			if (!ok) {
-				formError = '项目名已存在';
-				return;
+		saving = true;
+		formError = '';
+		try {
+			if (editingId !== null) {
+				const updated = await updateProject(editingId, payload);
+				// 改名后仍按 id 选中，不会因为名字变化而跳走
+				activeId = updated.id;
+			} else {
+				const created = await addProject(payload);
+				activeId = created.id;
 			}
-			// 跟随改名后的选中项
-			activeLabel = label;
-		} else {
-			const ok = addProject(payload);
-			if (!ok) {
-				formError = '项目名已存在';
-				return;
-			}
-			activeLabel = label;
+			closeForm();
+		} catch (err) {
+			formError = err instanceof ApiError ? err.message : '保存失败，请稍后重试';
+		} finally {
+			saving = false;
 		}
-		closeForm();
 	}
 
 	// ===== 项目详情抽屉 =====
 	let detailOpen = $state(false);
 	let closingDetail = $state(false);
-	let detailLabel = $state<string | null>(null);
-	const detail = $derived(projects.find((p) => p.label === detailLabel) ?? null);
+	let detailId = $state<number | null>(null);
+	const detail = $derived(projects.find((p) => p.id === detailId) ?? null);
 
-	function openDetail(p: ProjectItem) {
-		p.unread = false;
-		detailLabel = p.label;
+	function openDetail(p: ApiProject) {
+		// 打开详情即清除未读角标（同步后端）
+		markProjectRead(p.id);
+		detailId = p.id;
 		closingDetail = false;
 		detailOpen = true;
 	}
@@ -197,7 +217,7 @@
 		setTimeout(() => {
 			closingDetail = false;
 			detailOpen = false;
-			detailLabel = null;
+			detailId = null;
 		}, 300);
 	}
 </script>
@@ -268,13 +288,13 @@
 
 			{#if active.tasks.length > 0}
 				<ul class="todo-list">
-					{#each active.tasks as task, i (i)}
+					{#each active.tasks as task (task.id)}
 						<li class="todo-item {task.done ? 'done' : ''}">
 							<label class="todo-check">
 								<input
 									type="checkbox"
 									checked={task.done}
-									onchange={() => toggleProjectTask(active.label, i)}
+									onchange={() => toggleProjectTask(task.id)}
 									aria-label={task.title}
 								/>
 								<span class="todo-box" aria-hidden="true"></span>
@@ -287,7 +307,7 @@
 								class="del"
 								title="删除任务"
 								aria-label="删除任务"
-								onclick={() => removeProjectTask(active.label, i)}
+								onclick={() => removeProjectTask(task.id)}
 							>
 								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 									<path d="M18 6L6 18M6 6l12 12" />
@@ -315,7 +335,7 @@
 			<div>
 				<h2 id="form-title">{formTitle}</h2>
 				<p class="drawer-sub">
-					{editingLabel
+					{editingId
 						? '修改项目信息，保存后立即生效'
 						: '填写项目基本信息，创建后即可添加任务'}
 				</p>
@@ -424,7 +444,9 @@
 
 			<footer class="drawer-foot">
 				<button type="button" class="btn btn-ghost" onclick={closeForm}>取消</button>
-				<button type="submit" class="btn btn-primary">{formSubmitText}</button>
+				<button type="submit" class="btn btn-primary" disabled={saving}>
+					{saving ? '保存中…' : formSubmitText}
+				</button>
 			</footer>
 		</form>
 	</aside>

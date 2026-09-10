@@ -3,12 +3,33 @@
  * 概览页与项目页共用同一份 projects/tasks 状态，
  * 在任一页面勾选、增删任务都会同步反映到另一页面。
  *
- * 用户/会话/成员已对接后端（见 src/lib/api/client.ts）；
- * 项目与任务仍为 mock，待后端对应模块就绪后按同样方式替换。
+ * 用户、会话、成员、项目、任务、动态均已对接后端
+ * （接口封装见 src/lib/api/client.ts，本文件只做状态与缓存）。
+ * 仅「消息」模块仍是前端 mock，待后端对应模块就绪后按同样方式替换。
+ *
+ * 状态暴露方式：Svelte 5 不允许从模块顶层导出 $derived，
+ * 因此统一用 getter 函数（ME() / MEMBERS() / PROJECTS() / TODOS() / ACTIVITIES()）。
  */
 
-import { authApi, clearToken, getToken, setToken, usersApi } from '$lib/api/client';
-import type { ApiMember, ApiUser, UpdateProfilePayload } from '$lib/api/client';
+import {
+	ApiError,
+	activitiesApi,
+	authApi,
+	clearToken,
+	getToken,
+	projectsApi,
+	setToken,
+	todosApi,
+	usersApi
+} from '$lib/api/client';
+import type {
+	ApiActivity,
+	ApiMember,
+	ApiProject,
+	ApiTodo,
+	ApiUser,
+	UpdateProfilePayload
+} from '$lib/api/client';
 
 export type TaskItem = {
 	title: string;
@@ -191,6 +212,14 @@ export type TodoType = '开发' | '设计' | '文档' | '运维' | '调研';
 
 export const TODO_TYPES: TodoType[] = ['开发', '设计', '文档', '运维', '调研'];
 
+/** 动态类型：工作汇报 / 通知 */
+export type PostType = 'report' | 'notice';
+
+export const POST_TYPES: { value: PostType; label: string }[] = [
+	{ value: 'report', label: '工作汇报' },
+	{ value: 'notice', label: '通知' }
+];
+
 /** 待办任务（概览的「任务列表」与任务页共用同一份数据） */
 export type TodoItem = {
 	text: string;
@@ -206,263 +235,268 @@ export type TodoItem = {
 	createdAt: number;
 };
 
-/** 按天数偏移生成时间戳，方便构造 mock 数据 */
-function daysAgo(n: number) {
-	return Date.now() - n * 24 * 60 * 60 * 1000;
+// ===== 工作区数据（项目 / 待办 / 动态）=====
+//
+// 三者都来自后端，用「容器对象 + getter 函数」暴露：
+// Svelte 5 不允许从模块顶层导出 $derived 状态，所以统一走函数。
+
+export const workspace = $state({
+	/** 项目列表（含各自的任务），来自 GET /api/projects */
+	projects: [] as ApiProject[],
+	/** 全局待办，来自 GET /api/todos */
+	todos: [] as ApiTodo[],
+	/** 动态，来自 GET /api/activities */
+	activities: [] as ApiActivity[],
+	/** 是否正在加载（页面可据此显示空态） */
+	loading: false,
+	/** 最近一次加载的错误信息，null 表示无错误 */
+	error: null as string | null
+});
+
+/** 项目列表 */
+export function PROJECTS(): ApiProject[] {
+	return workspace.projects;
 }
 
-export const todos = $state<TodoItem[]>([
-	{
-		text: '修复 Redlind 登出闪退',
-		done: false,
-		type: '开发',
-		color: 'red',
-		due: '今天',
-		author: 'Fofow',
-		priority: 'high',
-		createdAt: daysAgo(1)
-	},
-	{
-		text: 'Q3 数据看板需求评审',
-		done: false,
-		type: '设计',
-		color: 'violet',
-		due: '2 天',
-		author: 'Lily',
-		priority: 'medium',
-		createdAt: daysAgo(3)
-	},
-	{
-		text: '本周工作复盘周报',
-		done: true,
-		type: '文档',
-		color: 'amber',
-		due: '',
-		author: 'Fofow',
-		priority: 'low',
-		createdAt: daysAgo(5)
-	},
-	{
-		text: '部署文档整理与版本号升级',
-		done: true,
-		type: '运维',
-		color: 'green',
-		due: '',
-		author: 'TuneOasis',
-		priority: 'medium',
-		createdAt: daysAgo(9)
-	},
-	{
-		text: '用户访谈纪要归档',
-		done: false,
-		type: '调研',
-		color: 'cyan',
-		due: '3 天',
-		author: 'Mo',
-		priority: 'low',
-		createdAt: daysAgo(14)
+/** 全局待办列表 */
+export function TODOS(): ApiTodo[] {
+	return workspace.todos;
+}
+
+/** 动态列表 */
+export function ACTIVITIES(): ApiActivity[] {
+	return workspace.activities;
+}
+
+/** 按 id 找项目 */
+export function findProjectById(id: number): ApiProject | undefined {
+	return workspace.projects.find((p) => p.id === id);
+}
+
+/**
+ * 按项目名找项目。
+ * 前端历史上用名字定位，保留此入口；新代码建议用 findProjectById。
+ */
+export function findProject(label: string): ApiProject | undefined {
+	return workspace.projects.find((p) => p.label === label);
+}
+
+/** 待办类型 -> 标签配色，与后端约定一致 */
+export const TODO_COLORS: Record<TodoType, string> = {
+	开发: 'red',
+	设计: 'violet',
+	文档: 'amber',
+	运维: 'green',
+	调研: 'cyan'
+};
+
+/** 取待办的展示色；后端不返回 color，由前端按 type 映射 */
+export function todoColor(type: string): string {
+	return TODO_COLORS[type as TodoType] ?? 'red';
+}
+
+// ===== 加载 =====
+
+/** 拉取项目列表（含任务） */
+export async function loadProjects(): Promise<void> {
+	try {
+		const res = await projectsApi.list();
+		workspace.projects = res.items;
+		workspace.error = null;
+	} catch (err) {
+		workspace.error = err instanceof ApiError ? err.message : '项目加载失败';
 	}
-]);
+}
+
+/** 拉取全局待办 */
+export async function loadTodos(): Promise<void> {
+	try {
+		const res = await todosApi.list({ limit: 500 });
+		workspace.todos = res.items;
+		workspace.error = null;
+	} catch (err) {
+		workspace.error = err instanceof ApiError ? err.message : '任务加载失败';
+	}
+}
+
+/** 拉取动态 */
+export async function loadActivities(): Promise<void> {
+	try {
+		const res = await activitiesApi.list({ limit: 50 });
+		workspace.activities = res.items;
+		workspace.error = null;
+	} catch (err) {
+		workspace.error = err instanceof ApiError ? err.message : '动态加载失败';
+	}
+}
+
+/** 一次性加载概览页需要的全部数据 */
+export async function loadWorkspace(): Promise<void> {
+	// 防重入：登录态变化可能触发多次，避免并发重复请求
+	if (workspace.loading) return;
+	workspace.loading = true;
+	try {
+		await Promise.all([loadProjects(), loadTodos(), loadActivities()]);
+	} finally {
+		workspace.loading = false;
+	}
+}
+
+// ===== 待办操作 =====
 
 /** 切换待办完成状态 */
-export function toggleTodo(i: number) {
-	if (todos[i]) todos[i].done = !todos[i].done;
+export async function toggleTodo(id: number): Promise<void> {
+	// 乐观更新：先改本地，失败回滚
+	const item = workspace.todos.find((t) => t.id === id);
+	if (!item) return;
+	const before = item.done;
+	item.done = !before;
+	try {
+		const updated = await todosApi.toggle(id);
+		item.done = updated.done;
+	} catch (err) {
+		item.done = before;
+		throw err;
+	}
 }
 
-/** 新增待办任务 */
-export function addTodo(text: string, type: TodoType, author: string, priority: Priority) {
-	const t = text.trim();
-	if (!t) return;
-	const palette: Record<TodoType, string> = {
-		开发: 'red',
-		设计: 'violet',
-		文档: 'amber',
-		运维: 'green',
-		调研: 'cyan'
-	};
-	todos.unshift({
-		text: t,
-		done: false,
+/** 新建待办；返回新条目 */
+export async function addTodo(
+	text: string,
+	type: TodoType,
+	author: string,
+	priority: Priority
+): Promise<ApiTodo> {
+	const created = await todosApi.create({
+		text: text.trim(),
 		type,
-		color: palette[type],
-		due: '',
-		author,
 		priority,
-		createdAt: Date.now()
+		authorName: author
+	});
+	// 新任务插到最前，与后端 createdAt 倒序一致
+	workspace.todos = [created, ...workspace.todos];
+	return created;
+}
+
+/** 删除待办 */
+export async function removeTodo(id: number): Promise<void> {
+	await todosApi.remove(id);
+	workspace.todos = workspace.todos.filter((t) => t.id !== id);
+}
+
+// ===== 项目操作 =====
+
+/** 新建项目；业务错误（如重名）会抛 ApiError 供页面提示 */
+export async function addProject(input: NewProjectInput): Promise<ApiProject> {
+	const created = await projectsApi.create({
+		label: input.label.trim(),
+		tag: input.tag,
+		color: input.color,
+		ui: input.ui,
+		purpose: input.purpose,
+		intro: input.intro,
+		stack: input.stack,
+		frameworks: input.frameworks,
+		deployed: input.deployed
+	});
+	workspace.projects = [...workspace.projects, created];
+	return created;
+}
+
+/** 修改项目；originalId 为编辑前的项目 id */
+export async function updateProject(originalId: number, input: NewProjectInput): Promise<ApiProject> {
+	const updated = await projectsApi.update(originalId, {
+		label: input.label.trim(),
+		tag: input.tag,
+		color: input.color,
+		ui: input.ui,
+		purpose: input.purpose,
+		intro: input.intro,
+		stack: input.stack,
+		frameworks: input.frameworks,
+		deployed: input.deployed
+	});
+	workspace.projects = workspace.projects.map((p) => (p.id === originalId ? updated : p));
+	return updated;
+}
+
+/** 清除项目的未读角标（打开详情/弹窗时调用） */
+export async function markProjectRead(id: number): Promise<void> {
+	const item = workspace.projects.find((p) => p.id === id);
+	// 已是已读就不必再打一次请求
+	if (!item || !item.unread) return;
+	try {
+		const updated = await projectsApi.markRead(id);
+		workspace.projects = workspace.projects.map((p) => (p.id === id ? updated : p));
+	} catch {
+		// 角标清除失败不影响主流程，静默忽略
+	}
+}
+
+// ===== 项目任务操作 =====
+
+/** 给项目新增任务 */
+export async function addProjectTask(projectId: number, title: string): Promise<void> {
+	const text = title.trim();
+	if (!text) return;
+	const created = await projectsApi.addTask(projectId, text);
+	workspace.projects = workspace.projects.map((p) =>
+		p.id === projectId
+			? { ...p, tasks: [...p.tasks, created], taskTotal: p.taskTotal + 1, unread: true }
+			: p
+	);
+}
+
+/** 切换项目任务完成状态（按任务 id，不再靠数组下标） */
+export async function toggleProjectTask(taskId: number): Promise<void> {
+	const updated = await projectsApi.toggleTask(taskId);
+	workspace.projects = workspace.projects.map((p) => {
+		if (!p.tasks.some((t) => t.id === taskId)) return p;
+		const tasks = p.tasks.map((t) => (t.id === taskId ? updated : t));
+		return { ...p, tasks, taskDone: tasks.filter((t) => t.done).length };
 	});
 }
 
-/** 删除待办任务 */
-export function removeTodo(i: number) {
-	if (todos[i]) todos.splice(i, 1);
+/** 删除项目任务 */
+export async function removeProjectTask(taskId: number): Promise<void> {
+	await projectsApi.removeTask(taskId);
+	workspace.projects = workspace.projects.map((p) => {
+		if (!p.tasks.some((t) => t.id === taskId)) return p;
+		const tasks = p.tasks.filter((t) => t.id !== taskId);
+		return { ...p, tasks, taskTotal: tasks.length, taskDone: tasks.filter((t) => t.done).length };
+	});
 }
 
-/** 动态类型 */
-export type PostType = 'report' | 'notice';
+// ===== 动态操作 =====
 
-export const POST_TYPES: { value: PostType; label: string }[] = [
-	{ value: 'report', label: '工作汇报' },
-	{ value: 'notice', label: '通知' }
-];
+/** 发布动态；mentions 传成员名字数组即可，后端会反查成用户 */
+export async function publishActivity(input: {
+	content: string;
+	type: PostType;
+	visibility: 'team' | 'private';
+	projectId: number | null;
+	mentions: string[];
+}): Promise<ApiActivity> {
+	const created = await activitiesApi.create({
+		content: input.content,
+		type: input.type,
+		visibility: input.visibility,
+		projectId: input.projectId,
+		mentions: input.mentions
+	});
+	workspace.activities = [created, ...workspace.activities];
+	return created;
+}
+
+/** 删除动态 */
+export async function removeActivity(id: number): Promise<void> {
+	await activitiesApi.remove(id);
+	workspace.activities = workspace.activities.filter((a) => a.id !== id);
+}
 
 /** 从正文里提取被 @ 的成员名 */
 export function extractMentions(text: string) {
-	return MEMBERS().filter((m) => text.includes('@' + m.name)).map((m) => m.name);
-}
-
-/** 今天的日期与“刚刚”文案，用于新建任务 */
-export function nowStamp() {
-	const d = new Date();
-	return {
-		date: `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`,
-		ago: '刚刚'
-	};
-}
-
-/** 所有页面共享的项目清单（模块级 $state，跨组件共享同一引用） */
-export const projects = $state<ProjectItem[]>([
-	{
-		label: 'Redlind',
-		tag: '桌面应用',
-		color: 'red',
-		unread: true,
-		ui: 'GUI',
-		purpose: '跨平台桌面工作台',
-		intro: 'Redlind 是 Red 系的桌面应用主应用，负责本地数据管理、打印与设备联动。',
-		stack: ['Typescript', 'Rust'],
-		frameworks: ['Tauri', 'Svelte'],
-		deployed: false,
-		tasks: [
-			{ title: 'Android 适配', done: false, date: '2026-9-9', ago: '12 分钟前', author: 'Fofow' },
-			{ title: 'Windows 适配', done: true, date: '2026-9-8', ago: '昨天', author: 'Mo' },
-			{ title: 'UI 优化', done: true, date: '2026-9-6', ago: '3 天前', author: 'Lily' }
-		]
-	},
-	{
-		label: 'Redcloud',
-		tag: '自动化',
-		color: 'red',
-		unread: false,
-		ui: 'CLI',
-		purpose: '部署与运维自动化',
-		intro: 'Redcloud 汇总各类一键部署脚本，负责服务端环境的初始化与发布。',
-		stack: ['Node', 'Python'],
-		frameworks: ['Fastify'],
-		deployed: true,
-		tasks: [
-			{ title: 'TuneOasis 自动部署脚本', done: false, date: '2026-9-9', ago: '41 分钟前', author: '奇奇' }
-		]
-	},
-	{
-		label: 'RedLauncher',
-		tag: '启动器',
-		color: 'green',
-		unread: true,
-		ui: 'GUI',
-		purpose: '统一应用启动入口',
-		intro: 'RedLauncher 用统一入口拉起 Red 系各个工具，支持快速切换与更新。',
-		stack: ['Typescript'],
-		frameworks: ['Tauri'],
-		deployed: false,
-		tasks: [
-			{ title: '加入 RedStation 项目', done: false, date: '2026-9-9', ago: '2 小时前', author: 'Fofow' }
-		]
-	},
-	{
-		label: 'Redocs',
-		tag: '文档',
-		color: 'amber',
-		unread: false,
-		ui: 'GUI',
-		purpose: '文档库与知识沉淀',
-		intro: 'Redocs 是基于 VitePress 的文档库，存放原理笔记、实践报告与任务记录。',
-		stack: ['Typescript'],
-		frameworks: ['VitePress'],
-		deployed: true,
-		tasks: []
-	},
-	{
-		label: 'RedStation',
-		tag: '工作台',
-		color: 'violet',
-		unread: true,
-		ui: 'GUI',
-		purpose: '一体化工作台',
-		intro: 'RedStation 把项目、任务、进度汇报与报表收拢到一个界面里，作为日常入口。',
-		stack: ['Typescript', 'Node'],
-		frameworks: ['SvelteKit', 'Fastify'],
-		deployed: true,
-		tasks: [
-			{ title: '后端接入', done: false, date: '2026-9-9', ago: '26 分钟前', author: 'Mo' },
-			{ title: '项目 UI 设计', done: false, date: '2026-9-8', ago: '昨天', author: 'Lily' },
-			{ title: '项目部署', done: false, date: '2026-9-7', ago: '前天', author: 'Fofow' }
-		]
-	}
-]);
-
-/** 按名称查找项目；名称唯一，找不到返回 undefined */
-export function findProject(label: string) {
-	return projects.find((p) => p.label === label);
-}
-
-/** 新建项目；名称重复则返回 false */
-export function addProject(input: NewProjectInput) {
-	const label = input.label.trim();
-	if (!label || findProject(label)) return false;
-	projects.push({
-		label,
-		tag: input.tag.trim() || '未分类',
-		color: input.color,
-		unread: false,
-		ui: input.ui,
-		purpose: input.purpose.trim(),
-		intro: input.intro.trim(),
-		stack: [...input.stack],
-		frameworks: input.frameworks.map((f) => f.trim()).filter(Boolean),
-		deployed: input.deployed,
-		tasks: []
-	});
-	return true;
-}
-
-/** 修改已有项目的信息；项目名改动会同步（新名字重复则返回 false） */
-export function updateProject(originalLabel: string, input: NewProjectInput) {
-	const proj = findProject(originalLabel);
-	if (!proj) return false;
-	const label = input.label.trim();
-	if (!label) return false;
-	// 改名时不能与其它项目重名
-	if (label !== originalLabel && findProject(label)) return false;
-
-	proj.label = label;
-	proj.tag = input.tag.trim() || '未分类';
-	proj.color = input.color;
-	proj.ui = input.ui;
-	proj.purpose = input.purpose.trim();
-	proj.intro = input.intro.trim();
-	proj.stack = [...input.stack];
-	proj.frameworks = input.frameworks.map((f) => f.trim()).filter(Boolean);
-	proj.deployed = input.deployed;
-	return true;
-}
-
-/** 给指定项目新增一条任务 */
-export function addProjectTask(label: string, title: string, author: string = CURRENT_USER) {
-	const proj = findProject(label);
-	if (!proj) return;
-	const text = title.trim();
-	if (!text) return;
-	proj.tasks.push({ title: text, done: false, author, ...nowStamp() });
-}
-
-/** 切换指定项目第 i 条任务的完成状态 */
-export function toggleProjectTask(label: string, i: number) {
-	const proj = findProject(label);
-	if (proj?.tasks[i]) proj.tasks[i].done = !proj.tasks[i].done;
-}
-
-/** 删除指定项目第 i 条任务 */
-export function removeProjectTask(label: string, i: number) {
-	const proj = findProject(label);
-	if (proj) proj.tasks.splice(i, 1);
+	return MEMBERS()
+		.filter((m) => text.includes('@' + m.name))
+		.map((m) => m.name);
 }

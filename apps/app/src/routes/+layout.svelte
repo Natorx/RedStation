@@ -2,7 +2,15 @@
 	import '../app.css';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { ME, MEMBERS, loadMembers, logout, restoreSession, session } from '$lib/stores/workspace.svelte';
+	import {
+		ME,
+		MEMBERS,
+		loadMembers,
+		loadWorkspace,
+		logout,
+		restoreSession,
+		session
+	} from '$lib/stores/workspace.svelte';
 
 	let { children } = $props();
 
@@ -14,9 +22,11 @@
 		restoreSession();
 	});
 
-	// 登录后加载团队成员，供 @ 提及与发布者下拉使用
+	// 登录后加载团队成员与工作区数据（项目/待办/动态）
 	$effect(() => {
-		if (session.loggedIn && MEMBERS().length === 0) loadMembers();
+		if (!session.loggedIn) return;
+		if (MEMBERS().length === 0) loadMembers();
+		loadWorkspace();
 	});
 
 	// 会话恢复完成后才做路由守卫，避免刷新页面时误跳登录页

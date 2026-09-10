@@ -231,3 +231,220 @@ export const healthApi = {
 		});
 	}
 };
+
+// ===== 项目模块 =====
+
+export type ApiProjectTask = {
+	id: number;
+	projectId: number;
+	title: string;
+	done: boolean;
+	author: string;
+	/** 后端算好的日期文案，如 2026-9-10 */
+	date: string;
+	/** 后端算好的相对时间，如「12 分钟前」 */
+	ago: string;
+	createdAt: string;
+};
+
+export type ApiProject = {
+	id: number;
+	label: string;
+	tag: string;
+	color: string;
+	unread: boolean;
+	ui: string;
+	purpose: string;
+	intro: string;
+	stack: string[];
+	frameworks: string[];
+	deployed: boolean;
+	tasks: ApiProjectTask[];
+	taskTotal: number;
+	taskDone: number;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ProjectPayload = {
+	label: string;
+	tag?: string;
+	color?: string;
+	ui?: string;
+	purpose?: string;
+	intro?: string;
+	stack?: string[];
+	frameworks?: string[];
+	deployed?: boolean;
+};
+
+export const projectsApi = {
+	list(query: { q?: string; tag?: string; unread?: boolean; limit?: number; offset?: number } = {}) {
+		return request<{ total: number; items: ApiProject[] }>('/api/projects', { query });
+	},
+
+	findById(id: number) {
+		return request<ApiProject>(`/api/projects/${id}`);
+	},
+
+	findByLabel(label: string) {
+		return request<ApiProject>(`/api/projects/label/${encodeURIComponent(label)}`);
+	},
+
+	create(payload: ProjectPayload) {
+		return request<ApiProject>('/api/projects', { method: 'POST', body: payload });
+	},
+
+	update(id: number, payload: Partial<ProjectPayload>) {
+		return request<ApiProject>(`/api/projects/${id}`, { method: 'PATCH', body: payload });
+	},
+
+	remove(id: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/projects/${id}`, { method: 'DELETE' });
+	},
+
+	/** 清除未读角标 */
+	markRead(id: number) {
+		return request<ApiProject>(`/api/projects/${id}/read`, { method: 'POST' });
+	},
+
+	// ===== 项目下的任务 =====
+
+	listTasks(projectId: number) {
+		return request<ApiProjectTask[]>(`/api/projects/${projectId}/tasks`);
+	},
+
+	addTask(projectId: number, title: string) {
+		return request<ApiProjectTask>(`/api/projects/${projectId}/tasks`, {
+			method: 'POST',
+			body: { title }
+		});
+	},
+
+	updateTask(taskId: number, patch: { title?: string; done?: boolean }) {
+		return request<ApiProjectTask>(`/api/projects/tasks/${taskId}`, {
+			method: 'PATCH',
+			body: patch
+		});
+	},
+
+	toggleTask(taskId: number) {
+		return request<ApiProjectTask>(`/api/projects/tasks/${taskId}/toggle`, { method: 'PATCH' });
+	},
+
+	removeTask(taskId: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/projects/tasks/${taskId}`, {
+			method: 'DELETE'
+		});
+	}
+};
+
+// ===== 全局待办模块 =====
+
+export type ApiTodo = {
+	id: number;
+	text: string;
+	done: boolean;
+	type: string;
+	priority: string;
+	dueAt: string | null;
+	author: string;
+	/** 毫秒时间戳，前端用于筛选与排序 */
+	createdAt: number;
+	updatedAt: string;
+};
+
+export type TodoPayload = {
+	text?: string;
+	done?: boolean;
+	type?: string;
+	priority?: string;
+	dueAt?: string | null;
+	authorName?: string;
+};
+
+export const todosApi = {
+	list(
+		query: {
+			type?: string;
+			priority?: string;
+			done?: boolean;
+			since?: number;
+			limit?: number;
+			offset?: number;
+		} = {}
+	) {
+		return request<{ total: number; items: ApiTodo[] }>('/api/todos', { query });
+	},
+
+	stats() {
+		return request<{ total: number; open: number; done: number; high: number }>('/api/todos/stats');
+	},
+
+	findById(id: number) {
+		return request<ApiTodo>(`/api/todos/${id}`);
+	},
+
+	create(payload: TodoPayload & { text: string }) {
+		return request<ApiTodo>('/api/todos', { method: 'POST', body: payload });
+	},
+
+	update(id: number, payload: TodoPayload) {
+		return request<ApiTodo>(`/api/todos/${id}`, { method: 'PATCH', body: payload });
+	},
+
+	toggle(id: number) {
+		return request<ApiTodo>(`/api/todos/${id}/toggle`, { method: 'PATCH' });
+	},
+
+	remove(id: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/todos/${id}`, { method: 'DELETE' });
+	}
+};
+
+// ===== 动态模块 =====
+
+export type ApiActivity = {
+	id: number;
+	/** 作者名字首字符，用于头像 */
+	who: string;
+	name: string;
+	/** 正文 */
+	action: string;
+	/** 展示时间文案 */
+	time: string;
+	color: string;
+	/** 关联项目名，未关联为空串 */
+	project: string;
+	type: string;
+	visibility: string;
+	mentions: string[];
+	createdAt: string;
+};
+
+export type ActivityPayload = {
+	content: string;
+	type?: string;
+	visibility?: string;
+	projectId?: number | null;
+	/** 支持用户 id 或名字 */
+	mentions?: (number | string)[];
+};
+
+export const activitiesApi = {
+	list(query: { limit?: number; offset?: number } = {}) {
+		return request<{ total: number; items: ApiActivity[] }>('/api/activities', { query });
+	},
+
+	findById(id: number) {
+		return request<ApiActivity>(`/api/activities/${id}`);
+	},
+
+	create(payload: ActivityPayload) {
+		return request<ApiActivity>('/api/activities', { method: 'POST', body: payload });
+	},
+
+	remove(id: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/activities/${id}`, { method: 'DELETE' });
+	}
+};
