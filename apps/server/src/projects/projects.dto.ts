@@ -37,6 +37,10 @@ export type CreateProjectDto = {
 	stack?: string[];
 	frameworks?: string[];
 	deployed?: boolean;
+	/** 运行端口，如 "3010"；多个用逗号分隔 */
+	runPort?: string;
+	/** 发起人名字；不传时取当前登录用户 */
+	owner?: string;
 };
 
 /** 更新项目入参，全部可选（支持改名） */
@@ -50,6 +54,10 @@ export type UpdateProjectDto = {
 	stack?: string[];
 	frameworks?: string[];
 	deployed?: boolean;
+	/** 运行端口，如 "3010"；多个用逗号分隔 */
+	runPort?: string;
+	/** 发起人名字；传空串表示不修改（新建时由后端填当前用户） */
+	owner?: string;
 };
 
 /** 列表查询入参 */
@@ -63,12 +71,18 @@ export type ListProjectsQuery = {
 	offset?: number;
 };
 
+/** 项目任务的类别，与前端下拉选项保持一致 */
+export const TASK_CATEGORIES = ['功能', '新模块', '优化', 'UI', '运维', '设计'] as const;
+export type TaskCategory = (typeof TASK_CATEGORIES)[number];
+
 /** 项目下的任务 */
 export type ProjectTaskView = {
 	id: number;
 	projectId: number;
 	title: string;
 	done: boolean;
+	/** 类别：功能 / 新模块 / 优化 / UI / 运维 / 设计 */
+	category: TaskCategory;
 	/** 发布者名字 */
 	author: string;
 	/** 前端展示用的日期文案，如 2026-9-10 */
@@ -91,6 +105,10 @@ export type ProjectView = {
 	stack: string[];
 	frameworks: string[];
 	deployed: boolean;
+	/** 项目发起人名字；未记录时为空串 */
+	owner: string;
+	/** 运行端口，如 "3010"；多个用逗号分隔，未填为空串 */
+	runPort: string;
 	tasks: ProjectTaskView[];
 	/** 任务总数与已完成数，供列表页统计，免去前端遍历 */
 	taskTotal: number;

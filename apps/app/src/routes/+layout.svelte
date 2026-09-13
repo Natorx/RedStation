@@ -39,6 +39,7 @@
 		{ href: '/messages', label: '消息', icon: 'msg' },
 		{ href: '/projects', label: '项目', icon: 'box' },
 		{ href: '/tasks', label: '任务', icon: 'check' },
+		{ href: '/plans', label: '规划', icon: 'flow' },
 		{ href: '/team', label: '团队', icon: 'users' },
 		{ href: '/reports', label: '报表', icon: 'chart' },
 		{ href: '/me', label: '我', icon: 'user' },
@@ -48,29 +49,42 @@
 	const notifications = $state([
 		{
 			kind: 'mention',
-			title: '@你提到了任务「Q3 数据看板」',
-			body: '奇奇在任务评论中 @ 了你并补充了验收标准。',
+			cat: 'mention',
+			title: '动态「Q3 数据看板」中提到了你',
+			body: '奇奇在动态「Q3 数据看板」中提到了你。',
 			time: '5 分钟前'
 		},
 		{
 			kind: 'complete',
-			title: '任务已标记为完成',
-			body: 'Lily 完成了里程碑「1.0 内测」下的修复清单。',
+			cat: 'task',
+			title: 'Lily 于 1 小时前完成了任务「1.0 内测修复清单」',
+			body: '任务状态已更新为已完成，可前往任务页查看。',
 			time: '1 小时前'
 		},
 		{
 			kind: 'comment',
+			cat: 'feed',
 			title: '你的动态收到新评论',
 			body: 'Mo 在「Redlind 后端重构」下回复了你的留言。',
 			time: '3 小时前'
-		},
-		{
-			kind: 'system',
-			title: '本地数据已自动备份',
-			body: 'RedStation 工作台今天的改动已保存到本地快照。',
-			time: '昨天'
 		}
 	]);
+
+	/** 通知分类：@我 / 任务状态变更 / 新的动态 */
+	type NotifCat = 'mention' | 'task' | 'feed';
+	const NOTIF_CATS: { value: NotifCat; label: string }[] = [
+		{ value: 'mention', label: '@我' },
+		{ value: 'task', label: '任务状态变更' },
+		{ value: 'feed', label: '新的动态' }
+	];
+	// 各分类未读数：静态数据，仅用于标签角标展示
+	const catUnread: Record<NotifCat, number> = { mention: 1, task: 1, feed: 1 };
+	// 当前选中的分类，null 表示「全部」
+	let notifCat = $state<NotifCat | null>(null);
+	// 抽屉中展示的通知：按所选分类过滤
+	const shownNotifications = $derived(
+		notifCat === null ? notifications : notifications.filter((n) => n.cat === notifCat)
+	);
 
 	let unreadCount = $state(3);
 	let drawerOpen = $state(false);
@@ -156,6 +170,10 @@
 							<path d="M4 7l8 5 8-5" />
 						{:else if item.icon === 'chart'}
 							<path d="M4 20V10M10 20V4M16 20v-7M21 20H3" />
+						{:else if item.icon === 'flow'}
+							<rect x="2.5" y="9" width="6" height="6" rx="1.4" />
+							<rect x="15.5" y="9" width="6" height="6" rx="1.4" />
+							<path d="M8.5 12h7M12 12v5" />
 						{:else if item.icon === 'user'}
 							<circle cx="12" cy="8" r="4" />
 							<path d="M4 21a8 8 0 0116 0" />
@@ -263,11 +281,40 @@
 					{/if}
 				</header>
 
-				{#if notifications.length === 0}
-					<p class="notif-empty">暂无通知，休息一下吧。</p>
+				<div class="notif-tabs" role="tablist" aria-label="通知分类">
+					<button
+						type="button"
+						class="notif-tab"
+						class:active={notifCat === null}
+						role="tab"
+						aria-selected={notifCat === null}
+						onclick={() => (notifCat = null)}
+					>
+						全部
+						<span class="notif-tab-num">{notifications.length}</span>
+					</button>
+					{#each NOTIF_CATS as c}
+						<button
+							type="button"
+							class="notif-tab"
+							class:active={notifCat === c.value}
+							role="tab"
+							aria-selected={notifCat === c.value}
+							onclick={() => (notifCat = c.value)}
+						>
+							{c.label}
+							{#if catUnread[c.value] > 0}
+								<span class="notif-tab-num">{catUnread[c.value]}</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+
+				{#if shownNotifications.length === 0}
+					<p class="notif-empty">该分类暂无通知，休息一下吧。</p>
 				{:else}
 					<ul class="notif-list">
-						{#each notifications as n, i}
+						{#each shownNotifications as n, i}
 							<li class="notif-item">
 								<svg class="notif-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 									<path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -733,7 +780,7 @@
 	.content {
 		flex: 1;
 		padding: var(--space-6);
-		max-width: 1240px;
+		max-width: 1680px;
 		width: 100%;
 		margin: 0 auto;
 	}
@@ -877,6 +924,51 @@
 	.notif-clear:hover {
 		color: var(--red-600);
 		background: rgba(220, 38, 38, 0.18);
+	}
+
+	/* ===== 通知分类标签栏 ===== */
+	.notif-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-bottom: var(--space-4);
+	}
+	.notif-tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-family: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--text-2);
+		background: var(--bg-2);
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		padding: 5px 12px;
+		cursor: pointer;
+		transition: color 0.15s, border-color 0.15s, background 0.15s;
+	}
+	.notif-tab:hover {
+		color: var(--text-0);
+		border-color: var(--line-strong);
+	}
+	.notif-tab.active {
+		color: var(--red-500);
+		background: var(--accent-soft);
+		border-color: var(--red-500);
+	}
+	.notif-tab-num {
+		font-size: 0.72rem;
+		font-weight: 700;
+		line-height: 1;
+		padding: 3px 6px;
+		border-radius: 999px;
+		color: var(--text-1);
+		background: var(--bg-3);
+	}
+	.notif-tab.active .notif-tab-num {
+		color: #fff;
+		background: var(--red-500);
 	}
 
 	.notif-list {

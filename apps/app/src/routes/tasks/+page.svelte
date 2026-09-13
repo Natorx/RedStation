@@ -21,28 +21,99 @@
 
 	// ===== 筛选 =====
 	let filterType = $state<'all' | TodoType>('all');
-	let filterTime = $state<'all' | '1d' | '3d' | '7d' | '30d'>('all');
+	/** 创建时间范围筛选；空串表示不限 */
+	let filterFrom = $state('');
+	let filterTo = $state('');
 	let filterPriority = $state<'all' | Priority>('all');
 	let filterDone = $state<'all' | 'open' | 'done'>('all');
 
 	const DAY = 24 * 60 * 60 * 1000;
-	/** 各时间粒度的天数 */
-	const TIME_RANGES: { value: '1d' | '3d' | '7d' | '30d'; label: string; days: number }[] = [
-		{ value: '1d', label: '近 1 天', days: 1 },
-		{ value: '3d', label: '近 3 天', days: 3 },
-		{ value: '7d', label: '近 7 天', days: 7 },
-		{ value: '30d', label: '近 30 天', days: 30 }
-	];
-	const timeCutoff = $derived(
-		filterTime === 'all'
-			? 0
-			: Date.now() - (TIME_RANGES.find((r) => r.value === filterTime)?.days ?? 0) * DAY
+	/** 把 <input type="date"> 的 yyyy-mm-dd 转为当天 00:00 的毫秒时间戳；非法输入返回 null */
+	function dayStart(v: string): number | null {
+		if (!v) return null;
+		const ts = new Date(`${v}T00:00:00`).getTime();
+		return Number.isNaN(ts) ? null : ts;
+	}
+	/** 结束日期取当天 23:59:59.999，保证包含当天创建的任务 */
+	function dayEnd(v: string): number | null {
+		if (!v) return null;
+		const ts = new Date(`${v}T23:59:59.999`).getTime();
+		return Number.isNaN(ts) ? null : ts;
+	}
+	const fromTs = $derived(dayStart(filterFrom));
+	const toTs = $derived(dayEnd(filterTo));
+
+	// ===== 日历（点选单日筛选） =====
+	/** 把毫秒时间戳转成本地 yyyy-mm-dd，避免 toISOString 的 UTC 偏移 */
+	function ymd(ts: number): string {
+		const d = new Date(ts);
+		const m = `${d.getMonth() + 1}`.padStart(2, '0');
+		const day = `${d.getDate()}`.padStart(2, '0');
+		return `${d.getFullYear()}-${m}-${day}`;
+	}
+	/** 当前展示的月份（该月 1 号） */
+	let calMonth = $state(new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime());
+	const todayKey = ymd(Date.now());
+	/** 有任务的日期 -> 当天任务数 */
+	const dayCounts = $derived.by(() => {
+		const map = new Map<string, number>();
+		for (const t of todos) {
+			const k = ymd(t.createdAt);
+			map.set(k, (map.get(k) ?? 0) + 1);
+		}
+		return map;
+	});
+	/** 当月网格：补齐前导空格，按 7 列排布 */
+	const calCells = $derived.by(() => {
+		const first = new Date(calMonth);
+		const year = first.getFullYear();
+		const month = first.getMonth();
+		const lead = new Date(year, month, 1).getDay();
+		const days = new Date(year, month + 1, 0).getDate();
+		const cells: { key: string; day: number; count: number; selected: boolean; today: boolean }[] = [];
+		for (let i = 1; i <= days; i++) {
+			const key = ymd(new Date(year, month, i).getTime());
+			cells.push({
+				key,
+				day: i,
+				count: dayCounts.get(key) ?? 0,
+				selected: filterFrom === key && filterTo === key,
+				today: key === todayKey
+			});
+		}
+		return { lead, cells };
+	});
+	const calTitle = $derived(
+		`${new Date(calMonth).getFullYear()} 年 ${new Date(calMonth).getMonth() + 1} 月`
 	);
+	function shiftMonth(delta: number) {
+		const d = new Date(calMonth);
+		calMonth = new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime();
+	}
+	/** 点选某天：同一日期再点一次则取消筛选 */
+	function pickDay(key: string) {
+		if (filterFrom === key && filterTo === key) {
+			filterFrom = '';
+			filterTo = '';
+			return;
+		}
+		filterFrom = key;
+		filterTo = key;
+	}
+
+	/** 起止日期都有值时，把范围文本化展示在日历下方 */
+	const rangeLabel = $derived.by(() => {
+		if (!filterFrom && !filterTo) return '';
+		const f = filterFrom || '不限';
+		const t = filterTo || '不限';
+		return `${f} ~ ${t}`;
+	});
 
 	const filtered = $derived(
 		todos.filter((t) => {
 			if (filterType !== 'all' && t.type !== filterType) return false;
-			if (filterTime !== 'all' && t.createdAt < timeCutoff) return false;
+			if (fromTs !== null && t.createdAt < fromTs) return false;
+			if (toTs !== null && t.createdAt > toTs) return false;
 			if (filterPriority !== 'all' && t.priority !== filterPriority) return false;
 			if (filterDone === 'open' && t.done) return false;
 			if (filterDone === 'done' && !t.done) return false;
@@ -52,14 +123,16 @@
 
 	const hasFilter = $derived(
 		filterType !== 'all' ||
-			filterTime !== 'all' ||
+			!!filterFrom ||
+			!!filterTo ||
 			filterPriority !== 'all' ||
 			filterDone !== 'all'
 	);
 
 	function clearFilters() {
 		filterType = 'all';
-		filterTime = 'all';
+		filterFrom = '';
+		filterTo = '';
 		filterPriority = 'all';
 		filterDone = 'all';
 	}
@@ -157,6 +230,7 @@
 		</div>
 	</section>
 
+	<div class="split">
 	<!-- 筛选栏 -->
 	<section class="card filters">
 		<div class="filter-row">
@@ -174,21 +248,6 @@
 				</div>
 			</div>
 
-			<div class="fgroup">
-				<span class="flabel">时间</span>
-				<div class="seg">
-					<button class="seg-btn" class:active={filterTime === 'all'} onclick={() => (filterTime = 'all')}>
-						全部
-					</button>
-					{#each TIME_RANGES as r}
-						<button
-							class="seg-btn"
-							class:active={filterTime === r.value}
-							onclick={() => (filterTime = r.value)}>{r.label}</button
-						>
-					{/each}
-				</div>
-			</div>
 		</div>
 
 		<div class="filter-row">
@@ -225,12 +284,56 @@
 				</div>
 			</div>
 
-			<div class="filter-actions">
-				{#if hasFilter}
-					<button class="btn-ghost" onclick={clearFilters}>清除筛选</button>
+		</div>
+
+		<!-- 日历：按创建日期区间筛选 -->
+		<div class="calendar">
+			<div class="cal-head">
+				<span class="flabel">创建日期</span>
+				{#if filterFrom || filterTo}
+					<button class="cal-clear" onclick={() => { filterFrom = ''; filterTo = ''; }}>重置</button>
 				{/if}
-				<button class="btn-primary" onclick={openForm}>+ 新建任务</button>
 			</div>
+			<div class="cal-fields">
+				<div class="cal-bar">
+					<button class="cal-nav" onclick={() => shiftMonth(-1)} aria-label="上个月">‹</button>
+					<span class="cal-title">{calTitle}</span>
+					<button class="cal-nav" onclick={() => shiftMonth(1)} aria-label="下个月">›</button>
+				</div>
+
+				<div class="cal-week">
+					{#each ['日', '一', '二', '三', '四', '五', '六'] as w}
+						<span>{w}</span>
+					{/each}
+				</div>
+
+				<div class="cal-grid">
+					{#each Array(calCells.lead) as _}
+						<span class="cal-blank"></span>
+					{/each}
+					{#each calCells.cells as c (c.key)}
+						<button
+							class="cal-day"
+							class:selected={c.selected}
+							class:today={c.today}
+							class:busy={c.count > 0}
+							onclick={() => pickDay(c.key)}
+							title={c.count > 0 ? `${c.count} 个任务` : '无任务'}
+						>
+							{c.day}
+							{#if c.count > 0}<span class="cal-dot"></span>{/if}
+						</button>
+					{/each}
+				</div>
+			</div>
+			<p class="cal-hint">
+				{rangeLabel ? `已筛选：${rangeLabel}` : '点击日期筛选当天创建的任务，再点一次取消'}
+			</p>
+		</div>
+
+		<!-- 筛选栏右下方：清除筛选 -->
+		<div class="filters-foot">
+			<button class="btn-ghost" onclick={clearFilters} disabled={!hasFilter}>清除筛选</button>
 		</div>
 	</section>
 
@@ -241,6 +344,7 @@
 				<h2>任务列表</h2>
 				<p class="sub">共 {sorted.length} 条 · 按创建时间倒序</p>
 			</div>
+			<button class="btn-primary" onclick={openForm}>+ 新建任务</button>
 		</header>
 
 		{#if sorted.length === 0}
@@ -281,6 +385,7 @@
 			</ul>
 		{/if}
 	</section>
+	</div>
 </div>
 
 <!-- 新建任务抽屉 -->
@@ -398,6 +503,14 @@
 		flex-direction: column;
 		gap: var(--space-4);
 	}
+
+	/* ===== 左右布局：筛选在左，任务列表在右 ===== */
+	.split {
+		display: grid;
+		grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.6fr);
+		gap: var(--space-4);
+		align-items: start;
+	}
 	.filter-row {
 		display: flex;
 		align-items: flex-end;
@@ -442,11 +555,127 @@
 		color: #fff;
 		background: var(--red-600);
 	}
-	.filter-actions {
+
+	/* ===== 日历（日期区间筛选） ===== */
+	.calendar {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding-top: var(--space-4);
+		border-top: 1px solid var(--line);
+	}
+	.cal-head {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
 		gap: var(--space-2);
-		margin-left: auto;
+	}
+	.cal-clear {
+		font-family: inherit;
+		font-size: 0.74rem;
+		font-weight: 600;
+		padding: 3px 8px;
+		border: 1px solid var(--line);
+		border-radius: 7px;
+		background: transparent;
+		color: var(--text-2);
+		cursor: pointer;
+	}
+	.cal-clear:hover {
+		color: var(--text-0);
+	}
+	.cal-fields {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.cal-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+	}
+	.cal-title {
+		font-size: 0.82rem;
+		font-weight: 700;
+		color: var(--text-0);
+	}
+	.cal-nav {
+		width: 26px;
+		height: 26px;
+		display: grid;
+		place-items: center;
+		font-family: inherit;
+		font-size: 0.95rem;
+		border: 1px solid var(--line);
+		border-radius: 7px;
+		background: var(--bg-2);
+		color: var(--text-1);
+		cursor: pointer;
+	}
+	.cal-nav:hover {
+		color: var(--text-0);
+		border-color: var(--red-500);
+	}
+	.cal-week,
+	.cal-grid {
+		display: grid;
+		grid-template-columns: repeat(7, 1fr);
+		gap: 4px;
+	}
+	.cal-week span {
+		text-align: center;
+		font-size: 0.68rem;
+		font-weight: 600;
+		color: var(--text-2);
+	}
+	.cal-blank {
+		height: 42px;
+	}
+	.cal-day {
+		position: relative;
+		height: 42px;
+		display: grid;
+		place-items: center;
+		font-family: inherit;
+		font-size: 0.82rem;
+		border: 1px solid transparent;
+		border-radius: 7px;
+		background: transparent;
+		color: var(--text-1);
+		cursor: pointer;
+		transition: background 0.15s, color 0.15s;
+	}
+	.cal-day:hover {
+		background: var(--bg-2);
+		color: var(--text-0);
+	}
+	.cal-day.busy {
+		font-weight: 700;
+		color: var(--text-0);
+	}
+	.cal-day.today {
+		border-color: var(--line);
+	}
+	.cal-day.selected {
+		background: var(--red-600);
+		color: #fff;
+	}
+	.cal-dot {
+		position: absolute;
+		bottom: 3px;
+		width: 3px;
+		height: 3px;
+		border-radius: 50%;
+		background: var(--red-500);
+	}
+	.cal-day.selected .cal-dot {
+		background: #fff;
+	}
+	.cal-hint {
+		margin: 0;
+		font-size: 0.72rem;
+		color: var(--text-2);
 	}
 
 	.btn-primary,
@@ -481,6 +710,20 @@
 	/* ===== 列表 ===== */
 	.card-head {
 		margin-bottom: var(--space-4);
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-4);
+	}
+	/* 筛选栏底部：清除筛选靠右下 */
+	.filters-foot {
+		display: flex;
+		justify-content: flex-end;
+		padding-top: var(--space-2);
+	}
+	.filters-foot .btn-ghost:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
 	}
 	.card-head h2 {
 		font-size: 1.05rem;
@@ -767,8 +1010,8 @@
 		.stat-grid {
 			grid-template-columns: repeat(2, 1fr);
 		}
-		.filter-actions {
-			margin-left: 0;
+		.split {
+			grid-template-columns: 1fr;
 		}
 	}
 </style>

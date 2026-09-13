@@ -7,7 +7,16 @@
  * - 请求/响应序列化、错误归一化
  */
 
+import { PUBLIC_API_BASE } from '$env/static/public';
+
 const TOKEN_KEY = 'redstation.token';
+
+/**
+ * API 基址。
+ * - 生产（adapter-node SSR / 独立端口直连）：构建期由 PUBLIC_API_BASE 注入后端地址
+ * - 开发：.env 中不设该项，留空后走 vite proxy 的相对路径 /api/*
+ */
+const API_BASE: string = PUBLIC_API_BASE || '';
 
 /** 后端错误统一结构 */
 export class ApiError extends Error {
@@ -49,7 +58,10 @@ type RequestOptions = {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
 	const { method = 'GET', body, query, skipAuth = false } = options;
 
-	const url = new URL(path, typeof location !== 'undefined' ? location.origin : 'http://localhost');
+	const url = new URL(
+		path,
+		API_BASE || (typeof location !== 'undefined' ? location.origin : 'http://localhost')
+	);
 	if (query) {
 		for (const [k, v] of Object.entries(query)) {
 			if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
@@ -66,7 +78,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 	let res: Response;
 	try {
-		res = await fetch(url.pathname + url.search, {
+		res = await fetch(url.href, {
 			method,
 			headers,
 			body: body === undefined ? undefined : JSON.stringify(body)
@@ -239,6 +251,8 @@ export type ApiProjectTask = {
 	projectId: number;
 	title: string;
 	done: boolean;
+	/** 类别：功能 / 新模块 / 优化 / UI / 运维 / 设计 */
+	category: ApiTaskCategory;
 	author: string;
 	/** 后端算好的日期文案，如 2026-9-10 */
 	date: string;
@@ -246,6 +260,10 @@ export type ApiProjectTask = {
 	ago: string;
 	createdAt: string;
 };
+
+/** 项目任务的类别，与后端 TASK_CATEGORIES 保持一致 */
+export const TASK_CATEGORIES = ['功能', '新模块', '优化', 'UI', '运维', '设计'] as const;
+export type ApiTaskCategory = (typeof TASK_CATEGORIES)[number];
 
 export type ApiProject = {
 	id: number;
@@ -259,6 +277,10 @@ export type ApiProject = {
 	stack: string[];
 	frameworks: string[];
 	deployed: boolean;
+	/** 运行端口，如 "3010"；多个用逗号分隔，未填为空串 */
+	runPort: string;
+	/** 项目发起人名字；未记录时为空串 */
+	owner: string;
 	tasks: ApiProjectTask[];
 	taskTotal: number;
 	taskDone: number;
@@ -276,8 +298,9 @@ export type ProjectPayload = {
 	stack?: string[];
 	frameworks?: string[];
 	deployed?: boolean;
+	/** 运行端口，如 "3010"；多个用逗号分隔 */
+	runPort?: string;
 };
-
 export const projectsApi = {
 	list(query: { q?: string; tag?: string; unread?: boolean; limit?: number; offset?: number } = {}) {
 		return request<{ total: number; items: ApiProject[] }>('/api/projects', { query });
@@ -314,14 +337,14 @@ export const projectsApi = {
 		return request<ApiProjectTask[]>(`/api/projects/${projectId}/tasks`);
 	},
 
-	addTask(projectId: number, title: string) {
+	addTask(projectId: number, title: string, category?: ApiTaskCategory) {
 		return request<ApiProjectTask>(`/api/projects/${projectId}/tasks`, {
 			method: 'POST',
-			body: { title }
+			body: { title, category }
 		});
 	},
 
-	updateTask(taskId: number, patch: { title?: string; done?: boolean }) {
+	updateTask(taskId: number, patch: { title?: string; done?: boolean; category?: ApiTaskCategory }) {
 		return request<ApiProjectTask>(`/api/projects/tasks/${taskId}`, {
 			method: 'PATCH',
 			body: patch
@@ -446,5 +469,83 @@ export const activitiesApi = {
 
 	remove(id: number) {
 		return request<{ id: number; deleted: boolean }>(`/api/activities/${id}`, { method: 'DELETE' });
+	}
+};
+
+// ===== 规划 =====
+
+/** 步骤状态 */
+export type ApiStepStatus = 'todo' | 'doing' | 'done';
+
+export type ApiPlanStep = {
+	id: number;
+	planId: number;
+	title: string;
+	status: ApiStepStatus;
+	/** 横向排列顺序，从 0 开始 */
+	position: number;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ApiPlan = {
+	id: number;
+	title: string;
+	goal: string;
+	active: boolean;
+	owner: string;
+	steps: ApiPlanStep[];
+	stepTotal: number;
+	stepDone: number;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type PlanPayload = {
+	title: string;
+	goal?: string;
+	active?: boolean;
+	steps?: string[];
+};
+
+export const plansApi = {
+	list(query: { q?: string; active?: boolean; limit?: number; offset?: number } = {}) {
+		return request<{ total: number; items: ApiPlan[] }>('/api/plans', { query });
+	},
+
+	findById(id: number) {
+		return request<ApiPlan>(`/api/plans/${id}`);
+	},
+
+	create(payload: PlanPayload) {
+		return request<ApiPlan>('/api/plans', { method: 'POST', body: payload });
+	},
+
+	update(id: number, payload: Partial<PlanPayload>) {
+		return request<ApiPlan>(`/api/plans/${id}`, { method: 'PATCH', body: payload });
+	},
+
+	remove(id: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/plans/${id}`, { method: 'DELETE' });
+	},
+
+	/** 追加步骤；返回更新后的整个计划 */
+	addStep(planId: number, title: string, status?: ApiStepStatus) {
+		return request<ApiPlan>(`/api/plans/${planId}/steps`, {
+			method: 'POST',
+			body: { title, status }
+		});
+	},
+
+	/** 改步骤内容 / 状态 / 顺序 */
+	updateStep(
+		stepId: number,
+		payload: { title?: string; status?: ApiStepStatus; position?: number }
+	) {
+		return request<ApiPlan>(`/api/plans/steps/${stepId}`, { method: 'PATCH', body: payload });
+	},
+
+	removeStep(stepId: number) {
+		return request<ApiPlan>(`/api/plans/steps/${stepId}`, { method: 'DELETE' });
 	}
 };

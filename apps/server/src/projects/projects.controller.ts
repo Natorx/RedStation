@@ -56,8 +56,11 @@ export class ProjectsController {
 
 	/** POST /api/projects — 新建项目，项目名唯一 */
 	@Post()
-	create(@Body() dto: CreateProjectDto): Promise<ProjectView> {
-		return this.projects.create(dto);
+	@UseGuards(JwtAuthGuard)
+	create(@Body() dto: CreateProjectDto, @Req() req: AuthedRequest): Promise<ProjectView> {
+		// 未显式传发起人时，记为当前登录用户
+		const user = this.currentUser(req);
+		return this.projects.create({ ...dto, owner: dto.owner?.trim() || user.name });
 	}
 
 	// ===== 项目任务（必须排在 :id 之前）=====
@@ -133,10 +136,10 @@ export class ProjectsController {
 	@UseGuards(JwtAuthGuard)
 	addTask(
 		@Param('id', ParseIntPipe) id: number,
-		@Body() body: { title?: string },
+		@Body() body: { title?: string; category?: string },
 		@Req() req: AuthedRequest
 	): Promise<ProjectTaskView> {
 		const user = this.currentUser(req);
-		return this.projects.addTask(id, body.title ?? '', user.id, user.name);
+		return this.projects.addTask(id, body.title ?? '', user.id, user.name, body.category);
 	}
 }

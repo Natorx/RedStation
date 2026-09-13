@@ -1,4 +1,4 @@
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
@@ -21,7 +21,7 @@ export default defineConfig({
 		// 开发期把 /api 转发到 NestJS 后端，避免跨域
 		proxy: {
 			'/api': {
-				target: process.env.VITE_API_TARGET ?? 'http://127.0.0.1:3001',
+				target: process.env.VITE_API_TARGET ?? 'http://127.0.0.1:3011',
 				changeOrigin: true
 			}
 		}

@@ -15,6 +15,34 @@
       "when": 1789048147364,
       "tag": "0001_aspiring_mongu",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789074233237,
+      "tag": "0002_high_prowler",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789291316110,
+      "tag": "0003_productive_unus",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789291843401,
+      "tag": "0004_bumpy_clea",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789293556057,
+      "tag": "0005_needy_silver_samurai",
+      "breakpoints": true
     }
   ]
 }

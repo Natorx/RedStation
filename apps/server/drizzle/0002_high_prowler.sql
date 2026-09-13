@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "run_port" varchar(64) DEFAULT '' NOT NULL;

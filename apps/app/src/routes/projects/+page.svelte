@@ -6,13 +6,15 @@
 		addProjectTask,
 		toggleProjectTask,
 		removeProjectTask,
+		updateProjectTask,
+		removeProject,
 		markProjectRead,
 		STACK_OPTIONS,
 		UI_OPTIONS,
 		COLOR_OPTIONS,
 		type ProjectUI
 	} from '$lib/stores/workspace.svelte';
-	import { ApiError, type ApiProject } from '$lib/api/client';
+	import { ApiError, TASK_CATEGORIES, type ApiProject, type ApiProjectTask, type ApiTaskCategory } from '$lib/api/client';
 
 	/** 项目列表（后端数据） */
 	const projects = $derived(PROJECTS());
@@ -21,6 +23,8 @@
 	// 用 id 定位：改名后仍能正确跟随，也不会与其它项目混淆
 	let activeId = $state<number | null>(null);
 	let newTask = $state('');
+	/** 新任务的类别，默认「功能」 */
+	let newCategory = $state<ApiTaskCategory>('功能');
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let taskError = $state('');
 	let addingTask = $state(false);
@@ -45,9 +49,10 @@
 		if (!newTask.trim()) return;
 		addingTask = true;
 		taskError = '';
-		addProjectTask(active.id, newTask)
+		addProjectTask(active.id, newTask, newCategory)
 			.then(() => {
 				newTask = '';
+				newCategory = '功能';
 				inputEl?.focus();
 			})
 			.catch((err: unknown) => {
@@ -59,6 +64,45 @@
 	}
 
 	// ===== 项目表单（新建 / 编辑共用）=====
+	// ===== 任务行内编辑 =====
+	/** 正在编辑的任务 id；null 表示没有任务处于编辑态 */
+	let editingTaskId = $state<number | null>(null);
+	let editTitle = $state('');
+	let editCategory = $state<ApiTaskCategory>('功能');
+	let editError = $state('');
+	let savingTask = $state(false);
+
+	function startEditTask(task: ApiProjectTask) {
+		editingTaskId = task.id;
+		editTitle = task.title;
+		editCategory = task.category;
+		editError = '';
+	}
+
+	function cancelEditTask() {
+		editingTaskId = null;
+		editError = '';
+	}
+
+	/** 保存标题与类别；发布时间由后端保留，不会被改动 */
+	async function saveEditTask(taskId: number) {
+		const title = editTitle.trim();
+		if (!title) {
+			editError = '任务标题不能为空';
+			return;
+		}
+		savingTask = true;
+		editError = '';
+		try {
+			await updateProjectTask(taskId, { title, category: editCategory });
+			editingTaskId = null;
+		} catch (err) {
+			editError = err instanceof ApiError ? err.message : '保存失败，请稍后重试';
+		} finally {
+			savingTask = false;
+		}
+	}
+
 	let formOpen = $state(false);
 	let formError = $state('');
 	// 正在编辑的项目名；null 表示新建
@@ -79,6 +123,8 @@
 	let fFramework = $state('');
 	let fFrameworks = $state<string[]>([]);
 	let fDeployed = $state(false);
+	// 运行端口，如 3010；多个用逗号分隔
+	let fRunPort = $state('');
 	let fColor = $state('red');
 
 	function resetForm() {
@@ -91,6 +137,7 @@
 		fFramework = '';
 		fFrameworks = [];
 		fDeployed = false;
+		fRunPort = '';
 		fColor = 'red';
 		formError = '';
 	}
@@ -112,6 +159,7 @@
 		fFramework = '';
 		fFrameworks = [...p.frameworks];
 		fDeployed = p.deployed;
+		fRunPort = p.runPort ?? '';
 		fColor = p.color;
 		formError = '';
 		editingId = p.id;
@@ -175,7 +223,10 @@
 			intro: fIntro,
 			stack: fStack,
 			frameworks,
-			deployed: fDeployed
+			deployed: fDeployed,
+			runPort: fRunPort.trim(),
+			// 编辑时沿用原发起人；新建时留空，由后端记为当前登录用户
+			owner: editingId !== null ? (PROJECTS().find((p) => p.id === editingId)?.owner ?? '') : ''
 		};
 
 		saving = true;
@@ -209,6 +260,44 @@
 		detailId = p.id;
 		closingDetail = false;
 		detailOpen = true;
+	}
+
+	// ===== 删除项目 =====
+	/** 待确认删除的项目 id；null 表示未处于确认态 */
+	let confirmDeleteId = $state<number | null>(null);
+	let deleting = $state(false);
+	let deleteError = $state('');
+
+	/** 删除确认弹窗要展示的项目；null 表示弹窗关闭 */
+	const deleteTarget = $derived(projects.find((p) => p.id === confirmDeleteId) ?? null);
+
+	function askDelete(id: number) {
+		// 左列表点删除时同步打开该项目的详情抽屉，确认条统一在抽屉内展示
+		const p = projects.find((x) => x.id === id);
+		if (p && (!detailOpen || detailId !== id)) openDetail(p);
+		confirmDeleteId = id;
+		deleteError = '';
+	}
+
+	function cancelDelete() {
+		confirmDeleteId = null;
+		deleteError = '';
+	}
+
+	async function doDelete(id: number) {
+		deleting = true;
+		deleteError = '';
+		try {
+			await removeProject(id);
+			confirmDeleteId = null;
+			// 删的是当前详情项时关掉抽屉；选中项失效则清空，由 active 回落到第一个
+			if (detailId === id) closeDetail();
+			if (activeId === id) activeId = null;
+		} catch (err) {
+			deleteError = err instanceof ApiError ? err.message : '删除失败，请稍后重试';
+		} finally {
+			deleting = false;
+		}
 	}
 
 	function closeDetail() {
@@ -248,6 +337,24 @@
 								<span class="dot-new" title="有新任务"></span>
 							{/if}
 						</span>
+						<span
+							class="row-del"
+							role="button"
+							tabindex="0"
+							title="删除项目"
+							aria-label={`删除项目 ${p.label}`}
+							onclick={(e) => {
+								e.stopPropagation();
+								askDelete(p.id);
+							}}
+							onkeydown={(e) => {
+								if (e.key === 'Enter' || e.key === ' ') {
+									e.preventDefault();
+									e.stopPropagation();
+									askDelete(p.id);
+								}
+							}}
+						>×</span>
 						<span class="proj-row-bottom">
 							<span class="board-tag {p.color}">{p.tag}</span>
 							<span class="proj-count">{p.tasks.length} 项</span>
@@ -259,6 +366,7 @@
 	</aside>
 
 	<!-- 右侧：任务面板 -->
+	<div class="main-split" class:detail-open={detailOpen && !!detail}>
 	<section class="proj-main card">
 		{#if active}
 			<header class="main-head">
@@ -271,7 +379,9 @@
 							: '暂无任务，添加第一条吧'}
 					</p>
 				</div>
-				<button class="link-btn" onclick={() => openDetail(active)}>查看项目详情 →</button>
+				<button class="link-btn" onclick={() => (detailOpen ? closeDetail() : openDetail(active))}>
+					{detailOpen ? '收起详情 ←' : '查看项目详情 →'}
+				</button>
 			</header>
 
 			<form class="add-row" onsubmit={submitTask}>
@@ -283,6 +393,16 @@
 					placeholder="添加任务，回车确认…"
 					aria-label="新任务名称"
 				/>
+				<select
+					class="cat-select"
+					bind:value={newCategory}
+					aria-label="任务类别"
+					title="任务类别"
+				>
+					{#each TASK_CATEGORIES as c}
+						<option value={c}>{c}</option>
+					{/each}
+				</select>
 				<button class="btn btn-primary" type="submit">添加任务</button>
 			</form>
 
@@ -299,20 +419,74 @@
 								/>
 								<span class="todo-box" aria-hidden="true"></span>
 							</label>
-							<span class="todo-text">{task.title}</span>
-							<span class="act-time">发布于 {task.date} · {task.ago}</span>
-							<span class="todo-author">{task.author}</span>
-							<button
-								type="button"
-								class="del"
-								title="删除任务"
-								aria-label="删除任务"
-								onclick={() => removeProjectTask(task.id)}
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<path d="M18 6L6 18M6 6l12 12" />
-								</svg>
-							</button>
+
+							{#if editingTaskId === task.id}
+								<!-- 编辑态：改标题与类别，发布时间只读保留 -->
+								<div class="task-edit">
+									<input
+										class="input edit-title"
+										bind:value={editTitle}
+										placeholder="任务标题"
+										aria-label="任务标题"
+										onkeydown={(e) => {
+											if (e.key === 'Enter') saveEditTask(task.id);
+											if (e.key === 'Escape') cancelEditTask();
+										}}
+									/>
+									<select
+										class="cat-select"
+										bind:value={editCategory}
+										aria-label="任务类别"
+										title="任务类别"
+									>
+										{#each TASK_CATEGORIES as c}
+											<option value={c}>{c}</option>
+										{/each}
+									</select>
+									<span class="act-time">发布于 {task.date} · {task.ago}</span>
+									{#if editError}<span class="task-edit-err">{editError}</span>{/if}
+									<div class="task-edit-actions">
+										<button
+											type="button"
+											class="btn-mini"
+											onclick={cancelEditTask}
+											disabled={savingTask}>取消</button
+										>
+										<button
+											type="button"
+											class="btn btn-primary btn-save"
+											onclick={() => saveEditTask(task.id)}
+											disabled={savingTask}
+										>
+											{savingTask ? '保存中…' : '保存'}
+										</button>
+									</div>
+								</div>
+							{:else}
+								<!-- 展示态：点标题或类别即可进入编辑 -->
+								<button
+									type="button"
+									class="task-main"
+									title="点击编辑标题与类别"
+									onclick={() => startEditTask(task)}
+								>
+									<span class="todo-text">{task.title}</span>
+									<span class="cat-tag">{task.category}</span>
+								</button>
+								<span class="act-time">发布于 {task.date} · {task.ago}</span>
+								<span class="todo-author">{task.author}</span>
+								<button
+									type="button"
+									class="del"
+									title="删除任务"
+									aria-label="删除任务"
+									onclick={() => removeProjectTask(task.id)}
+								>
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<path d="M18 6L6 18M6 6l12 12" />
+									</svg>
+								</button>
+							{/if}
 						</li>
 					{/each}
 				</ul>
@@ -325,6 +499,83 @@
 			</footer>
 		{/if}
 	</section>
+
+	<!-- 右栏详情卡片：占右栏一半宽度，任务列表相应收窄 -->
+	{#if detailOpen && detail}
+		<aside class="detail-card card" aria-labelledby="detail-title">
+			<header class="detail-head">
+				<div>
+					<span class="board-tag {detail.color}">{detail.tag}</span>
+					<h2 id="detail-title">{detail.label}</h2>
+					<p class="detail-sub">{detail.purpose || '未填写用途'}</p>
+				</div>
+				<button class="detail-close" onclick={closeDetail} aria-label="收起详情">✕</button>
+			</header>
+
+			<div class="detail-actions">
+				<button class="btn-edit" onclick={() => openEdit(detail)}>编辑项目</button>
+				<button class="btn-danger" onclick={() => askDelete(detail.id)}>删除</button>
+			</div>
+
+			<div class="meta-grid">
+				<div class="meta">
+					<span class="meta-k">UI 形式</span>
+					<span class="meta-v">{detail.ui}</span>
+				</div>
+				<div class="meta">
+					<span class="meta-k">服务器部署</span>
+					<span class="meta-v" class:yes={detail.deployed}>{detail.deployed ? 'Yes' : 'No'}</span>
+				</div>
+				<div class="meta">
+					<span class="meta-k">运行端口</span>
+					<span class="meta-v" class:yes={!!detail.runPort}>{detail.runPort || '—'}</span>
+				</div>
+				<div class="meta">
+					<span class="meta-k">发起人</span>
+					<span class="meta-v">{detail.owner || '—'}</span>
+				</div>
+				<div class="meta">
+					<span class="meta-k">任务数</span>
+					<span class="meta-v"
+						>{detail.tasks.filter((t) => t.done).length}/{detail.tasks.length}</span
+					>
+				</div>
+			</div>
+
+			<div class="field">
+				<span class="field-label">用途</span>
+				<p class="detail-text">{detail.purpose || '—'}</p>
+			</div>
+
+			<div class="field">
+				<span class="field-label">介绍</span>
+				<p class="detail-text">{detail.intro || '—'}</p>
+			</div>
+
+			<div class="field">
+				<span class="field-label">技术栈</span>
+				<div class="chips">
+					{#each detail.stack as s}
+						<span class="chip on">{s}</span>
+					{:else}
+						<span class="detail-text">—</span>
+					{/each}
+				</div>
+			</div>
+
+			<div class="field">
+				<span class="field-label">框架</span>
+				<div class="chips">
+					{#each detail.frameworks as f}
+						<span class="chip on">{f}</span>
+					{:else}
+						<span class="detail-text">—</span>
+					{/each}
+				</div>
+			</div>
+		</aside>
+	{/if}
+	</div>
 </div>
 
 <!-- 新建项目抽屉 -->
@@ -438,6 +689,16 @@
 				</label>
 			</div>
 
+			<label class="field">
+				<span class="field-label">运行端口</span>
+				<input
+					class="input"
+					type="text"
+					bind:value={fRunPort}
+					placeholder="如 3010；多个用逗号分隔，如 3010,3011"
+				/>
+			</label>
+
 			{#if formError}
 				<p class="form-error">{formError}</p>
 			{/if}
@@ -452,83 +713,26 @@
 	</aside>
 {/if}
 
-<!-- 项目详情抽屉（右侧） -->
-{#if detailOpen && detail}
-	<div class="backdrop" class:closing={closingDetail} onclick={closeDetail}></div>
-	<aside
-		class="drawer"
-		class:closing={closingDetail}
-		role="dialog"
-		aria-modal="true"
-		aria-labelledby="detail-title"
-	>
-		<header class="drawer-head">
-			<div>
-				<span class="board-tag {detail.color}">{detail.tag}</span>
-				<h2 id="detail-title">{detail.label}</h2>
-				<p class="drawer-sub">{detail.purpose || '未填写用途'}</p>
-			</div>
-			<div class="head-actions">
-				<button class="btn-edit" onclick={() => openEdit(detail)}>编辑项目</button>
-				<button class="drawer-close" onclick={closeDetail} aria-label="关闭">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<path d="M18 6L6 18M6 6l12 12" />
-					</svg>
-				</button>
-			</div>
-		</header>
-
-		<div class="drawer-body">
-			<div class="meta-grid">
-				<div class="meta">
-					<span class="meta-k">UI 形式</span>
-					<span class="meta-v">{detail.ui}</span>
-				</div>
-				<div class="meta">
-					<span class="meta-k">服务器部署</span>
-					<span class="meta-v" class:yes={detail.deployed}>{detail.deployed ? 'Yes' : 'No'}</span>
-				</div>
-				<div class="meta">
-					<span class="meta-k">任务数</span>
-					<span class="meta-v"
-						>{detail.tasks.filter((t) => t.done).length}/{detail.tasks.length}</span
-					>
-				</div>
-			</div>
-
-			<div class="field">
-				<span class="field-label">用途</span>
-				<p class="detail-text">{detail.purpose || '—'}</p>
-			</div>
-
-			<div class="field">
-				<span class="field-label">介绍</span>
-				<p class="detail-text">{detail.intro || '—'}</p>
-			</div>
-
-			<div class="field">
-				<span class="field-label">技术栈</span>
-				<div class="chips">
-					{#each detail.stack as s}
-						<span class="chip on">{s}</span>
-					{:else}
-						<span class="detail-text">—</span>
-					{/each}
-				</div>
-			</div>
-
-			<div class="field">
-				<span class="field-label">框架</span>
-				<div class="chips">
-					{#each detail.frameworks as fw}
-						<span class="chip on">{fw}</span>
-					{:else}
-						<span class="detail-text">—</span>
-					{/each}
-				</div>
-			</div>
+<!-- 删除确认弹窗（屏幕居中） -->
+{#if confirmDeleteId !== null && deleteTarget}
+	<div
+		class="modal-backdrop"
+		onclick={() => !deleting && cancelDelete()}
+		role="presentation"
+	></div>
+	<div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="del-modal-title">
+		<h3 id="del-modal-title" class="modal-title">删除项目？</h3>
+		<p class="modal-text">
+			确定删除「<strong>{deleteTarget.label}</strong>」？该项目的 {deleteTarget.tasks.length} 条任务会一并删除，且不可恢复。
+		</p>
+		{#if deleteError}<p class="form-error">{deleteError}</p>{/if}
+		<div class="modal-actions">
+			<button class="btn-ghost" onclick={cancelDelete} disabled={deleting}>取消</button>
+			<button class="btn-danger on" onclick={() => doDelete(deleteTarget.id)} disabled={deleting}>
+				{deleting ? '删除中…' : '确认删除'}
+			</button>
 		</div>
-	</aside>
+	</div>
 {/if}
 
 <style>
@@ -621,6 +825,33 @@
 		align-items: center;
 		gap: 6px;
 	}
+	/* 悬停行才出现的删除入口 */
+	.row-del {
+		position: absolute;
+		top: 6px;
+		right: 8px;
+		width: 20px;
+		height: 20px;
+		display: grid;
+		place-items: center;
+		font-size: 0.95rem;
+		line-height: 1;
+		border-radius: 6px;
+		color: var(--text-2);
+		opacity: 0;
+		cursor: pointer;
+		transition: opacity 0.15s, color 0.15s, background 0.15s;
+	}
+	.proj-row {
+		position: relative;
+	}
+	.proj-row:hover .row-del {
+		opacity: 1;
+	}
+	.row-del:hover {
+		color: #f87171;
+		background: rgba(239, 68, 68, 0.14);
+	}
 	.proj-name {
 		font-size: 0.92rem;
 		font-weight: 650;
@@ -658,11 +889,22 @@
 	.board-tag.pink { background: rgba(236, 72, 153, 0.15); color: #f472b6; }
 
 	/* ===== 右栏 ===== */
+	/* 详情打开时右栏一分为二：任务列表在左，详情卡在右 */
+	.main-split {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: var(--space-4);
+		align-items: start;
+	}
+	.main-split.detail-open {
+		grid-template-columns: minmax(0, 1fr) minmax(260px, 0.55fr);
+	}
 	.proj-main {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
 		min-height: 420px;
+		min-width: 0;
 	}
 	.main-head {
 		display: flex;
@@ -695,7 +937,43 @@
 
 	.add-row {
 		display: flex;
+		align-items: center;
 		gap: var(--space-2);
+	}
+	/* 类别下拉：宽度固定，不被输入框挤掉 */
+	.cat-select {
+		flex: none;
+		width: 104px;
+		padding: 10px 26px 10px 10px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		background-color: var(--bg-0);
+		color: var(--text-0);
+		font-family: inherit;
+		font-size: 0.84rem;
+		cursor: pointer;
+		appearance: none;
+		background-image: linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
+			linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+		background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+		background-size: 5px 5px, 5px 5px;
+		background-repeat: no-repeat;
+	}
+	.cat-select:focus {
+		outline: none;
+		border-color: var(--red-500);
+	}
+	/* 任务类别标签 */
+	.cat-tag {
+		flex: none;
+		font-size: 0.68rem;
+		font-weight: 600;
+		padding: 2px 7px;
+		border-radius: 999px;
+		border: 1px solid var(--line);
+		background: var(--bg-2);
+		color: var(--text-2);
+		white-space: nowrap;
 	}
 	.input {
 		width: 100%;
@@ -706,6 +984,11 @@
 		color: var(--text-0);
 		font-family: inherit;
 		font-size: 0.88rem;
+	}
+	/* 添加任务行里：输入框占据剩余宽度，类别下拉与按钮保持自身宽度 */
+	.add-row .input {
+		flex: 1 1 auto;
+		min-width: 0;
 	}
 	.input:focus {
 		outline: none;
@@ -760,6 +1043,78 @@
 	}
 	.btn-ghost:hover {
 		border-color: var(--text-2);
+	}
+
+	/* ===== 删除项目 ===== */
+	.btn-danger {
+		font-family: inherit;
+		font-size: 0.78rem;
+		font-weight: 600;
+		padding: 6px 12px;
+		border: 1px solid rgba(239, 68, 68, 0.5);
+		border-radius: 9px;
+		background: transparent;
+		color: #f87171;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: background 0.15s, color 0.15s;
+	}
+	.btn-danger:hover:not(:disabled) {
+		background: rgba(239, 68, 68, 0.14);
+	}
+	.btn-danger.on {
+		background: var(--red-600);
+		border-color: var(--red-600);
+		color: #fff;
+	}
+	.btn-danger.on:hover:not(:disabled) {
+		filter: brightness(1.08);
+	}
+	.btn-danger:disabled,
+	.btn-ghost:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	/* 删除确认弹窗：固定在屏幕中心 */
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 90;
+		background: rgba(0, 0, 0, 0.55);
+		backdrop-filter: blur(2px);
+	}
+	.modal {
+		position: fixed;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		z-index: 91;
+		width: min(420px, calc(100vw - 32px));
+		padding: var(--space-5);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-lg);
+		background: var(--bg-1);
+		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+	}
+	.modal-title {
+		margin: 0;
+		font-size: 1.05rem;
+		color: var(--text-0);
+	}
+	.modal-text {
+		margin: var(--space-3) 0 0;
+		font-size: 0.86rem;
+		color: var(--text-1);
+		line-height: 1.6;
+	}
+	.modal-text strong {
+		color: var(--text-0);
+	}
+	.modal-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--space-2);
+		margin-top: var(--space-5);
 	}
 
 	/* 任务清单 */
@@ -834,6 +1189,59 @@
 	.todo-item.done .todo-text {
 		color: var(--text-3);
 		text-decoration: line-through;
+	}
+	/* 任务行：点标题/类别进入编辑的可点区域 */
+	.task-main {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex: 1 1 auto;
+		min-width: 0;
+		padding: 2px 6px;
+		margin-left: -6px;
+		border: 1px solid transparent;
+		border-radius: 8px;
+		background: transparent;
+		font-family: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.task-main:hover {
+		border-color: var(--line);
+		background: var(--bg-2);
+	}
+	/* 编辑态 */
+	.task-edit {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex: 1 1 auto;
+		min-width: 0;
+		flex-wrap: wrap;
+	}
+	.task-edit .edit-title {
+		flex: 1 1 180px;
+		min-width: 0;
+		padding: 6px 10px;
+		font-size: 0.85rem;
+	}
+	.task-edit .cat-select {
+		padding: 6px 26px 6px 10px;
+		font-size: 0.8rem;
+		width: 96px;
+	}
+	.task-edit-err {
+		font-size: 0.74rem;
+		color: #f87171;
+	}
+	.task-edit-actions {
+		display: flex;
+		gap: 6px;
+		margin-left: auto;
+	}
+	.task-edit-actions .btn-save {
+		padding: 5px 12px;
+		font-size: 0.76rem;
 	}
 	.act-time {
 		flex: none;
@@ -1091,11 +1499,74 @@
 		white-space: pre-wrap;
 	}
 
+	/* ===== 右栏详情卡 ===== */
+	.detail-card {
+		position: sticky;
+		top: var(--space-4);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+		min-width: 0;
+		animation: detail-in 0.22s ease;
+	}
+	@keyframes detail-in {
+		from {
+			opacity: 0;
+			transform: translateX(12px);
+		}
+	}
+	.detail-head {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-3);
+	}
+	.detail-head h2 {
+		margin-top: 6px;
+		font-size: 1.15rem;
+	}
+	.detail-sub {
+		margin-top: 4px;
+		font-size: 0.8rem;
+		color: var(--text-2);
+	}
+	.detail-close {
+		flex: none;
+		width: 26px;
+		height: 26px;
+		display: grid;
+		place-items: center;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text-2);
+		cursor: pointer;
+	}
+	.detail-close:hover {
+		color: var(--text-0);
+		border-color: var(--line-strong);
+	}
+	.detail-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+	/* 详情卡变窄后，元信息从三列改为两列，避免文字被挤断 */
+	.detail-card .meta-grid {
+		grid-template-columns: repeat(2, 1fr);
+		gap: var(--space-2);
+	}
+
 	@media (max-width: 900px) {
 		.proj-page {
 			grid-template-columns: 1fr;
 		}
 		.proj-side {
+			position: static;
+		}
+		.main-split.detail-open {
+			grid-template-columns: 1fr;
+		}
+		.detail-card {
 			position: static;
 		}
 		.grid-2,

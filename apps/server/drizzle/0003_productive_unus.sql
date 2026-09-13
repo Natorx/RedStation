@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "owner" varchar(64) DEFAULT '' NOT NULL;

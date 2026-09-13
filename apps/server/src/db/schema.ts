@@ -117,6 +117,12 @@ export const projects = pgTable(
 		/** 是否服务器部署 */
 		deployed: boolean('deployed').notNull().default(false),
 
+		/** 运行端口，如 "3010"；多个端口用逗号分隔，未填为空串 */
+		runPort: varchar('run_port', { length: 64 }).notNull().default(''),
+
+		/** 项目发起人名字快照；未登录创建时为空串 */
+		owner: varchar('owner', { length: 64 }).notNull().default(''),
+
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 	},
@@ -141,6 +147,9 @@ export const projectTasks = pgTable(
 		title: varchar('title', { length: 255 }).notNull(),
 
 		done: boolean('done').notNull().default(false),
+
+		/** 类别：功能 / 新模块 / 优化 / UI / 运维 / 设计 */
+		category: varchar('category', { length: 16 }).notNull().default('功能'),
 
 		/** 发布者用户 id；用户被删除时置空，前端回退显示名字 */
 		authorId: integer('author_id').references(() => users.id, { onDelete: 'set null' }),
@@ -251,6 +260,62 @@ export const activityMentions = pgTable(
 	]
 );
 
+// ===== 规划 =====
+
+/**
+ * 规划（一个计划 = 一张横向流程图）。
+ * 用户可以同时开启多个计划，各自独立维护自己的步骤链。
+ */
+export const plans = pgTable(
+	'plans',
+	{
+		id: serial('id').primaryKey(),
+
+		/** 计划名 */
+		title: varchar('title', { length: 96 }).notNull(),
+
+		/** 一句话目标 */
+		goal: varchar('goal', { length: 255 }).notNull().default(''),
+
+		/** 是否进行中；false 表示已归档/暂停 */
+		active: boolean('active').notNull().default(true),
+
+		ownerId: integer('owner_id').references(() => users.id, { onDelete: 'set null' }),
+		ownerName: varchar('owner_name', { length: 64 }).notNull().default(''),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [index('plans_active_idx').on(t.active)]
+);
+
+/**
+ * 规划步骤（流程图里的一个节点）。
+ * 顺序由 position 决定，前端按 position 升序横向排列。
+ */
+export const planSteps = pgTable(
+	'plan_steps',
+	{
+		id: serial('id').primaryKey(),
+
+		planId: integer('plan_id')
+			.notNull()
+			.references(() => plans.id, { onDelete: 'cascade' }),
+
+		title: varchar('title', { length: 255 }).notNull(),
+
+		/** 步骤状态：todo / doing / done */
+		status: varchar('status', { length: 16 }).notNull().default('todo'),
+
+		/** 横向排列顺序，从 0 开始 */
+		position: integer('position').notNull().default(0),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [index('plan_steps_plan_idx').on(t.planId)]
+);
+
 export type ProjectRow = typeof projects.$inferSelect;
 export type NewProjectRow = typeof projects.$inferInsert;
 export type ProjectTaskRow = typeof projectTasks.$inferSelect;
@@ -259,3 +324,7 @@ export type TodoRow = typeof todos.$inferSelect;
 export type NewTodoRow = typeof todos.$inferInsert;
 export type ActivityRow = typeof activities.$inferSelect;
 export type NewActivityRow = typeof activities.$inferInsert;
+export type PlanRow = typeof plans.$inferSelect;
+export type NewPlanRow = typeof plans.$inferInsert;
+export type PlanStepRow = typeof planSteps.$inferSelect;
+export type NewPlanStepRow = typeof planSteps.$inferInsert;

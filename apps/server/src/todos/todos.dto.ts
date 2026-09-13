@@ -6,7 +6,7 @@
  */
 
 /** 允许的任务类型，与前端颜色映射保持一致 */
-export const TODO_TYPES = ['开发', '设计', '文档', '运维', '调研'] as const;
+export const TODO_TYPES = ['开发', '设计', '文档', '运维', '调研', '其他'] as const;
 export type TodoType = (typeof TODO_TYPES)[number];
 
 /** 允许的优先级 */

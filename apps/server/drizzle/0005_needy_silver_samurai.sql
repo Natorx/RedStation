@@ -1,0 +1,1 @@
+ALTER TABLE "project_tasks" ADD COLUMN "category" varchar(16) DEFAULT '功能' NOT NULL;

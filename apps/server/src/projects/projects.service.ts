@@ -17,6 +17,8 @@ import {
 } from '../db/schema';
 import {
 	COLOR_OPTIONS,
+	TASK_CATEGORIES,
+	type TaskCategory,
 	UI_FORMS,
 	type CreateProjectDto,
 	type ListProjectsQuery,
@@ -126,6 +128,8 @@ export class ProjectsService {
 			stack: toCsv(dto.stack),
 			frameworks: toCsv(dto.frameworks),
 			deployed: dto.deployed ?? false,
+			runPort: dto.runPort?.trim() ?? '',
+			owner: dto.owner?.trim() ?? '',
 			unread: false
 		};
 
@@ -151,6 +155,8 @@ export class ProjectsService {
 		if (dto.stack !== undefined) patch.stack = toCsv(dto.stack);
 		if (dto.frameworks !== undefined) patch.frameworks = toCsv(dto.frameworks);
 		if (dto.deployed !== undefined) patch.deployed = dto.deployed;
+		if (dto.runPort !== undefined) patch.runPort = dto.runPort.trim();
+		if (dto.owner !== undefined && dto.owner.trim()) patch.owner = dto.owner.trim();
 
 		const [row] = await this.db.update(projects).set(patch).where(eq(projects.id, id)).returning();
 		const tasks = await this.tasksOfProjects([id]);
@@ -188,7 +194,8 @@ export class ProjectsService {
 		projectId: number,
 		title: string,
 		authorId: number | null,
-		authorName: string
+		authorName: string,
+		category?: string
 	): Promise<ProjectTaskView> {
 		await this.requireRow(projectId);
 
@@ -202,6 +209,7 @@ export class ProjectsService {
 				projectId,
 				title: text,
 				done: false,
+				category: this.normalizeCategory(category),
 				authorId: authorId ?? null,
 				authorName: authorName || ''
 			})
@@ -219,7 +227,7 @@ export class ProjectsService {
 	/** 更新任务：支持改标题与切换完成状态 */
 	async updateTask(
 		taskId: number,
-		patch: { title?: string; done?: boolean }
+		patch: { title?: string; done?: boolean; category?: string }
 	): Promise<ProjectTaskView> {
 		const current = await this.requireTask(taskId);
 
@@ -230,6 +238,7 @@ export class ProjectsService {
 			values.title = title;
 		}
 		if (patch.done !== undefined) values.done = patch.done;
+		if (patch.category !== undefined) values.category = this.normalizeCategory(patch.category);
 
 		const [row] = await this.db
 			.update(projectTasks)
@@ -331,6 +340,15 @@ export class ProjectsService {
 		return color;
 	}
 
+	/** 类别：空值回退到「功能」，非法值报 400 */
+	private normalizeCategory(raw?: string): TaskCategory {
+		const v = (raw ?? '').trim() || '功能';
+		if (!(TASK_CATEGORIES as readonly string[]).includes(v)) {
+			throw new BadRequestException(`任务类别不合法，可选：${TASK_CATEGORIES.join(' / ')}`);
+		}
+		return v as TaskCategory;
+	}
+
 	private normalizeUi(raw?: string): ProjectUI {
 		const ui = (raw ?? '').trim() || 'GUI';
 		if (!(UI_FORMS as readonly string[]).includes(ui)) {
@@ -347,6 +365,7 @@ export class ProjectsService {
 			projectId: row.projectId,
 			title: row.title,
 			done: row.done,
+			category: row.category as TaskCategory,
 			author: row.authorName,
 			date: humanDate(created),
 			ago: humanAgo(created),
@@ -367,6 +386,8 @@ export class ProjectsService {
 			stack: toList(row.stack),
 			frameworks: toList(row.frameworks),
 			deployed: row.deployed,
+			owner: row.owner,
+			runPort: row.runPort,
 			tasks,
 			taskTotal: tasks.length,
 			taskDone: tasks.filter((t) => t.done).length,

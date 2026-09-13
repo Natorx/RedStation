@@ -24,6 +24,14 @@
 	const runningCount = $derived(todos.filter((t) => !t.done).length);
 	const doneCount = $derived(todos.filter((t) => t.done).length);
 
+	// 项目内任务的待办数：所有项目未完成的项目任务合计
+	const projTaskOpen = $derived(
+		board.reduce(
+			(n, p) => n + (p.tasks ? p.tasks.filter((t) => !t.done).length : Math.max(p.taskTotal - p.taskDone, 0)),
+			0
+		)
+	);
+
 	// 顶部数据卡片：任务数与项目数取自后端数据
 	// 「平均专注时长」前端无数据来源，暂用占位并标注为静态值
 	const stats = $derived([
@@ -164,7 +172,7 @@
 			<span class="eyebrow">仪表盘 · Dashboard</span>
 			<h1>下午好，开始今天的工作 ✦</h1>
 			<p class="lead">
-				你有 <b>{runningCount}</b> 个任务待办，<b>{doneCount}</b> 个已完成。
+				你有 <b>{runningCount}</b> 个任务待办，<b>{projTaskOpen}</b> 个项目任务待办，<b>{doneCount}</b> 个已完成。
 			</p>
 			<div class="hero-actions">
 				<a class="btn btn-primary" href="/tasks">查看今日任务</a>

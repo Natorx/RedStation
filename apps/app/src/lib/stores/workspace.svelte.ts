@@ -17,6 +17,7 @@ import {
 	authApi,
 	clearToken,
 	getToken,
+	plansApi,
 	projectsApi,
 	setToken,
 	todosApi,
@@ -24,8 +25,11 @@ import {
 } from '$lib/api/client';
 import type {
 	ApiActivity,
+	ApiPlan,
+	ApiStepStatus,
 	ApiMember,
 	ApiProject,
+	ApiTaskCategory,
 	ApiTodo,
 	ApiUser,
 	UpdateProfilePayload
@@ -54,6 +58,10 @@ export type NewProjectInput = {
 	stack: string[];
 	frameworks: string[];
 	deployed: boolean;
+	/** 运行端口，如 "3010"；多个用逗号分隔 */
+	runPort: string;
+	/** 项目发起人名字 */
+	owner: string;
 };
 
 export type ProjectItem = {
@@ -74,6 +82,10 @@ export type ProjectItem = {
 	frameworks: string[];
 	/** 是否服务器部署 */
 	deployed: boolean;
+	/** 运行端口，如 "3010"；多个用逗号分隔 */
+	runPort: string;
+	/** 项目发起人名字 */
+	owner: string;
 };
 
 /** 可选的技术栈语言 */
@@ -208,9 +220,9 @@ export const PRIORITIES: { value: Priority; label: string }[] = [
 ];
 
 /** 任务类型（对应标签） */
-export type TodoType = '开发' | '设计' | '文档' | '运维' | '调研';
+export type TodoType = '开发' | '设计' | '文档' | '运维' | '调研' | '其他';
 
-export const TODO_TYPES: TodoType[] = ['开发', '设计', '文档', '运维', '调研'];
+export const TODO_TYPES: TodoType[] = ['开发', '设计', '文档', '运维', '调研', '其他'];
 
 /** 动态类型：工作汇报 / 通知 */
 export type PostType = 'report' | 'notice';
@@ -247,11 +259,18 @@ export const workspace = $state({
 	todos: [] as ApiTodo[],
 	/** 动态，来自 GET /api/activities */
 	activities: [] as ApiActivity[],
+	/** 规划（每个计划 = 一张横向流程图），来自 GET /api/plans */
+	plans: [] as ApiPlan[],
 	/** 是否正在加载（页面可据此显示空态） */
 	loading: false,
 	/** 最近一次加载的错误信息，null 表示无错误 */
 	error: null as string | null
 });
+
+/** 规划列表 */
+export function PLANS(): ApiPlan[] {
+	return workspace.plans;
+}
 
 /** 项目列表 */
 export function PROJECTS(): ApiProject[] {
@@ -287,7 +306,8 @@ export const TODO_COLORS: Record<TodoType, string> = {
 	设计: 'violet',
 	文档: 'amber',
 	运维: 'green',
-	调研: 'cyan'
+	调研: 'cyan',
+	其他: 'pink'
 };
 
 /** 取待办的展示色；后端不返回 color，由前端按 type 映射 */
@@ -339,6 +359,16 @@ export async function loadWorkspace(): Promise<void> {
 		await Promise.all([loadProjects(), loadTodos(), loadActivities()]);
 	} finally {
 		workspace.loading = false;
+	}
+}
+
+/** 拉取规划列表（每个计划含自己的步骤链） */
+export async function loadPlans(): Promise<void> {
+	try {
+		const res = await plansApi.list({ limit: 200 });
+		workspace.plans = res.items;
+	} catch (err) {
+		workspace.error = err instanceof ApiError ? err.message : '规划加载失败';
 	}
 }
 
@@ -397,7 +427,8 @@ export async function addProject(input: NewProjectInput): Promise<ApiProject> {
 		intro: input.intro,
 		stack: input.stack,
 		frameworks: input.frameworks,
-		deployed: input.deployed
+		deployed: input.deployed,
+		runPort: input.runPort
 	});
 	workspace.projects = [...workspace.projects, created];
 	return created;
@@ -414,10 +445,17 @@ export async function updateProject(originalId: number, input: NewProjectInput):
 		intro: input.intro,
 		stack: input.stack,
 		frameworks: input.frameworks,
-		deployed: input.deployed
+		deployed: input.deployed,
+		runPort: input.runPort
 	});
 	workspace.projects = workspace.projects.map((p) => (p.id === originalId ? updated : p));
 	return updated;
+}
+
+/** 删除项目；项目下的任务由后端级联删除 */
+export async function removeProject(id: number): Promise<void> {
+	await projectsApi.remove(id);
+	workspace.projects = workspace.projects.filter((p) => p.id !== id);
 }
 
 /** 清除项目的未读角标（打开详情/弹窗时调用） */
@@ -436,10 +474,14 @@ export async function markProjectRead(id: number): Promise<void> {
 // ===== 项目任务操作 =====
 
 /** 给项目新增任务 */
-export async function addProjectTask(projectId: number, title: string): Promise<void> {
+export async function addProjectTask(
+	projectId: number,
+	title: string,
+	category?: ApiTaskCategory
+): Promise<void> {
 	const text = title.trim();
 	if (!text) return;
-	const created = await projectsApi.addTask(projectId, text);
+	const created = await projectsApi.addTask(projectId, text, category);
 	workspace.projects = workspace.projects.map((p) =>
 		p.id === projectId
 			? { ...p, tasks: [...p.tasks, created], taskTotal: p.taskTotal + 1, unread: true }
@@ -454,6 +496,22 @@ export async function toggleProjectTask(taskId: number): Promise<void> {
 		if (!p.tasks.some((t) => t.id === taskId)) return p;
 		const tasks = p.tasks.map((t) => (t.id === taskId ? updated : t));
 		return { ...p, tasks, taskDone: tasks.filter((t) => t.done).length };
+	});
+}
+
+/**
+ * 更新项目任务的标题 / 类别。
+ * 只改传入的字段，createdAt（发布时间）由后端保留，不受影响。
+ */
+export async function updateProjectTask(
+	taskId: number,
+	patch: { title?: string; category?: ApiTaskCategory }
+): Promise<void> {
+	const updated = await projectsApi.updateTask(taskId, patch);
+	workspace.projects = workspace.projects.map((p) => {
+		if (!p.tasks.some((t) => t.id === taskId)) return p;
+		const tasks = p.tasks.map((t) => (t.id === taskId ? updated : t));
+		return { ...p, tasks };
 	});
 }
 
@@ -499,4 +557,60 @@ export function extractMentions(text: string) {
 	return MEMBERS()
 		.filter((m) => text.includes('@' + m.name))
 		.map((m) => m.name);
+}
+
+// ===== 规划操作 =====
+
+/** 用后端返回值替换本地计划，保持列表与步骤同步 */
+function replacePlan(plan: ApiPlan): void {
+	workspace.plans = workspace.plans.map((p) => (p.id === plan.id ? plan : p));
+}
+
+/** 新建计划；可带一串初始步骤标题 */
+export async function addPlan(input: {
+	title: string;
+	goal?: string;
+	steps?: string[];
+}): Promise<ApiPlan> {
+	const created = await plansApi.create({
+		title: input.title.trim(),
+		goal: input.goal?.trim() ?? '',
+		steps: (input.steps ?? []).map((s) => s.trim()).filter(Boolean)
+	});
+	workspace.plans = [created, ...workspace.plans];
+	return created;
+}
+
+/** 更新计划：改名 / 目标 / 启停 */
+export async function updatePlan(
+	id: number,
+	payload: { title?: string; goal?: string; active?: boolean }
+): Promise<ApiPlan> {
+	const updated = await plansApi.update(id, payload);
+	replacePlan(updated);
+	return updated;
+}
+
+/** 删除计划；步骤由后端级联删除 */
+export async function removePlan(id: number): Promise<void> {
+	await plansApi.remove(id);
+	workspace.plans = workspace.plans.filter((p) => p.id !== id);
+}
+
+/** 给计划追加一步，追加到流程末尾 */
+export async function addPlanStep(planId: number, title: string): Promise<void> {
+	replacePlan(await plansApi.addStep(planId, title.trim()));
+}
+
+/** 改步骤内容 / 状态 / 顺序 */
+export async function updatePlanStep(
+	stepId: number,
+	payload: { title?: string; status?: ApiStepStatus; position?: number }
+): Promise<void> {
+	replacePlan(await plansApi.updateStep(stepId, payload));
+}
+
+/** 删除步骤 */
+export async function removePlanStep(stepId: number): Promise<void> {
+	replacePlan(await plansApi.removeStep(stepId));
 }
