@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ApiError } from '$lib/api/client';
+	import { t } from '$lib/i18n';
 	import {
 		ME,
 		MEMBERS,
@@ -126,7 +127,7 @@
 				color: fColor,
 				teams
 			});
-			editOk = '已保存';
+			editOk = $t('common.saved');
 			setTimeout(() => closeEdit(), 600);
 		} catch (err) {
 			editError = err instanceof ApiError ? err.message : '保存失败，请稍后重试';
@@ -171,26 +172,26 @@
 		pwdOk = '';
 
 		if (!pCurrent) {
-			pwdError = '请输入当前密码';
+			pwdError = $t('me.currentPasswordRequired');
 			return;
 		}
 		if (pNew.length < 6) {
-			pwdError = '新密码至少 6 位';
+			pwdError = $t('me.passwordTooShort');
 			return;
 		}
 		if (pNew !== pConfirm) {
-			pwdError = '两次输入的新密码不一致';
+			pwdError = $t('me.passwordMismatch');
 			return;
 		}
 		if (pNew === pCurrent) {
-			pwdError = '新密码不能与当前密码相同';
+			pwdError = $t('me.passwordSame');
 			return;
 		}
 
 		pwdSaving = true;
 		try {
 			await changeMyPassword(pCurrent, pNew);
-			pwdOk = '密码已更新';
+			pwdOk = $t('me.passwordChanged');
 			setTimeout(() => closePwd(), 900);
 		} catch (err) {
 			pwdError = err instanceof ApiError ? err.message : '修改失败，请稍后重试';
@@ -207,13 +208,13 @@
 		<div class="profile-main">
 			<div class="name-row">
 				<h1>{ME()?.name ?? '未登录'}</h1>
-				<span class="uid" title="用户 ID">ID {ME()?.uid ?? '—'}</span>
+				<span class="uid" title={$t('me.uid')}>{$t('me.uid')} {ME()?.uid ?? '—'}</span>
 			</div>
 			<div class="profile-tags">
 				{#if ME()?.title}<span class="pill">{ME()!.title}</span>{/if}
 				<span class="pill role">{ME()?.role ?? '—'}</span>
 			</div>
-			<p class="profile-meta">{ME()?.email ?? '—'} · 加入于 {joinedAt}</p>
+			<p class="profile-meta">{ME()?.email ?? '—'} · {$t('account.joinedAt')} {joinedAt}</p>
 		</div>
 
 		<div class="profile-actions">
@@ -236,15 +237,15 @@
 		<div class="profile-stats">
 			<div class="stat">
 				<span class="stat-v">{myProjects.length}</span>
-				<span class="stat-k">负责项目</span>
+				<span class="stat-k">{$t('me.statProjects')}</span>
 			</div>
 			<div class="stat">
 				<span class="stat-v">{myTaskStats.done}/{myTaskStats.total}</span>
-				<span class="stat-k">任务完成</span>
+				<span class="stat-k">{$t('me.statTasks')}</span>
 			</div>
 			<div class="stat">
 				<span class="stat-v">{granted}/{permTotal}</span>
-				<span class="stat-k">已授权限</span>
+				<span class="stat-k">{$t('me.statPerms')}</span>
 			</div>
 		</div>
 	</section>
@@ -254,8 +255,8 @@
 		<section class="card">
 			<header class="card-head">
 				<div>
-					<h2>负责的项目</h2>
-					<p class="sub">{myProjects.length} 个项目 · 共 {myTaskStats.total} 项任务</p>
+					<h2>{$t('me.myProjects')}</h2>
+					<p class="sub">{$t('me.myProjectsSub', { values: { count: myProjects.length, tasks: myTaskStats.total } })}</p>
 				</div>
 				<a class="link" href="/projects">项目管理 →</a>
 			</header>
@@ -265,7 +266,7 @@
 						<span class="proj-dot" style="background:{p.color === 'red' ? '#ef4444' : p.color === 'violet' ? '#8b5cf6' : p.color === 'amber' ? '#f59e0b' : p.color === 'green' ? '#34d399' : p.color === 'cyan' ? '#22d3ee' : '#f472b6'}"></span>
 						<div class="proj-info">
 							<span class="proj-name">{p.label}</span>
-							<span class="proj-purpose">{p.purpose || '未填写用途'}</span>
+							<span class="proj-purpose">{p.purpose || $t('projects.noPurpose')}</span>
 						</div>
 						<span class="tag {p.color}">{p.tag}</span>
 						<span class="proj-count">{p.tasks.filter((t) => t.done).length}/{p.tasks.length}</span>
@@ -278,7 +279,7 @@
 		<section class="card">
 			<header class="card-head">
 				<div>
-					<h2>所在团队</h2>
+					<h2>{$t('me.myTeams')}</h2>
 					<p class="sub">{myTeams}</p>
 				</div>
 			</header>
@@ -287,7 +288,7 @@
 					<li class="team-item" class:me={m.name === ME()?.name}>
 						<span class="team-avatar" style="background:{m.color}">{initialsOf(m.name)}</span>
 						<div class="team-info">
-							<span class="team-name">{m.name}{#if m.name === ME()?.name}<span class="me-badge">我</span>{/if}</span>
+							<span class="team-name">{m.name}{#if m.name === ME()?.name}<span class="me-badge">{$t('me.meBadge')}</span>{/if}</span>
 							<span class="team-role">{m.role}</span>
 						</div>
 					</li>
@@ -300,8 +301,8 @@
 	<section class="card">
 		<header class="card-head">
 			<div>
-				<h2>职位与权限</h2>
-				<p class="sub">{ME()?.role ?? '—'}{ME()?.title ? ` · ${ME()!.title}` : ''} · 已授予 {granted} 项权限</p>
+				<h2>{$t('me.rolePerms')}</h2>
+				<p class="sub">{ME()?.role ?? '—'}{ME()?.title ? ` · ${ME()!.title}` : ''} · {$t('me.grantedCount', { values: { count: granted } })}</p>
 			</div>
 		</header>
 		<ul class="perm-list">
@@ -322,7 +323,7 @@
 						<span class="perm-name">{p.name}</span>
 						<span class="perm-desc">{p.desc}</span>
 					</div>
-					<span class="perm-state">{p.granted ? '已授权' : '未授权'}</span>
+					<span class="perm-state">{p.granted ? $t('me.granted') : $t('me.notGranted')}</span>
 				</li>
 			{/each}
 		</ul>
@@ -335,10 +336,10 @@
 	<aside class="drawer" class:closing={editClosing} role="dialog" aria-modal="true" aria-labelledby="edit-title">
 		<header class="drawer-head">
 			<div>
-				<h2 id="edit-title">编辑资料</h2>
-				<p class="drawer-sub">修改后立即同步到团队列表与侧栏名片</p>
+				<h2 id="edit-title">{$t('me.editProfile')}</h2>
+				<p class="drawer-sub">{$t('me.editSub')}</p>
 			</div>
-			<button class="drawer-close" onclick={closeEdit} aria-label="关闭">
+			<button class="drawer-close" onclick={closeEdit} aria-label={$t('common.close')}>
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M18 6L6 18M6 6l12 12" />
 				</svg>
@@ -348,27 +349,27 @@
 		<form class="drawer-body" onsubmit={submitEdit}>
 			<div class="grid-2">
 				<label class="field">
-					<span class="field-label">昵称 *</span>
-					<input class="input" type="text" bind:value={fName} placeholder="例如 Fofow" />
+					<span class="field-label">{$t('me.nickname')}</span>
+					<input class="input" type="text" bind:value={fName} placeholder={$t('me.nicknamePlaceholder')} />
 				</label>
 				<label class="field">
-					<span class="field-label">头像文字</span>
-					<input class="input" type="text" maxlength="8" bind:value={fInitials} placeholder="留空自动取昵称" />
+					<span class="field-label">{$t('me.initials')}</span>
+					<input class="input" type="text" maxlength="8" bind:value={fInitials} placeholder={$t('me.initialsPlaceholder')} />
 				</label>
 			</div>
 
 			<label class="field">
-				<span class="field-label">邮箱</span>
+				<span class="field-label">{$t('me.email')}</span>
 				<input class="input" type="email" bind:value={fEmail} placeholder="name@example.com" />
 			</label>
 
 			<label class="field">
-				<span class="field-label">职级 / 头衔</span>
-				<input class="input" type="text" bind:value={fTitle} placeholder="例如 全栈工程师" />
+				<span class="field-label">{$t('me.titleLabel')}</span>
+				<input class="input" type="text" bind:value={fTitle} placeholder={$t('me.titlePlaceholder')} />
 			</label>
 
 			<div class="field">
-				<span class="field-label">头像配色</span>
+				<span class="field-label">{$t('me.avatarColor')}</span>
 				<div class="swatches">
 					{#each COLOR_SWATCHES as c}
 						<button
@@ -387,14 +388,14 @@
 			</div>
 
 			<div class="field">
-				<span class="field-label">所在团队（回车添加）</span>
+				<span class="field-label">{$t('me.teamsLabel')}</span>
 				<input
 					class="input"
 					type="text"
 					bind:value={fTeamInput}
 					onkeydown={onTeamKey}
 					onblur={addTeam}
-					placeholder="例如 Red 系核心团队"
+					placeholder={$t('me.teamsPlaceholder')}
 				/>
 				{#if fTeams.length}
 					<div class="chips tag-chips">
@@ -409,16 +410,16 @@
 			</div>
 
 			<p class="field-note">
-				用户 ID、角色、账号状态与权限由管理员维护，此处不可修改。
+				{$t('me.adminNote')}
 			</p>
 
 			{#if editError}<p class="form-error">{editError}</p>{/if}
 			{#if editOk}<p class="form-ok">{editOk}</p>{/if}
 
 			<footer class="drawer-foot">
-				<button type="button" class="btn-ghost" onclick={closeEdit}>取消</button>
+				<button type="button" class="btn-ghost" onclick={closeEdit}>{$t('common.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={saving}>
-					{saving ? '保存中…' : '保存修改'}
+					{saving ? $t('common.saving') : $t('projects.submitSave')}
 				</button>
 			</footer>
 		</form>
@@ -431,10 +432,10 @@
 	<aside class="drawer" class:closing={pwdClosing} role="dialog" aria-modal="true" aria-labelledby="pwd-title">
 		<header class="drawer-head">
 			<div>
-				<h2 id="pwd-title">修改密码</h2>
-				<p class="drawer-sub">需要先验证当前密码</p>
+				<h2 id="pwd-title">{$t('me.changePassword')}</h2>
+				<p class="drawer-sub">{$t('me.pwdSub')}</p>
 			</div>
-			<button class="drawer-close" onclick={closePwd} aria-label="关闭">
+			<button class="drawer-close" onclick={closePwd} aria-label={$t('common.close')}>
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M18 6L6 18M6 6l12 12" />
 				</svg>
@@ -443,11 +444,11 @@
 
 		<form class="drawer-body" onsubmit={submitPwd}>
 			<label class="field">
-				<span class="field-label">当前密码 *</span>
+				<span class="field-label">{$t('me.currentPassword')} *</span>
 				<input class="input" type="password" autocomplete="current-password" bind:value={pCurrent} />
 			</label>
 			<label class="field">
-				<span class="field-label">新密码 *</span>
+				<span class="field-label">{$t('me.newPassword')} *</span>
 				<input
 					class="input"
 					type="password"
@@ -457,7 +458,7 @@
 				/>
 			</label>
 			<label class="field">
-				<span class="field-label">确认新密码 *</span>
+				<span class="field-label">{$t('me.confirmPassword')} *</span>
 				<input class="input" type="password" autocomplete="new-password" bind:value={pConfirm} />
 			</label>
 
@@ -467,7 +468,7 @@
 			<footer class="drawer-foot">
 				<button type="button" class="btn-ghost" onclick={closePwd}>取消</button>
 				<button type="submit" class="btn-primary" disabled={pwdSaving}>
-					{pwdSaving ? '提交中…' : '确认修改'}
+					{pwdSaving ? $t('common.saving') : $t('me.updatePassword')}
 				</button>
 			</footer>
 		</form>

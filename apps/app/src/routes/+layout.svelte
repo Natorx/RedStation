@@ -11,6 +11,11 @@
 		restoreSession,
 		session
 	} from '$lib/stores/workspace.svelte';
+	import { locale } from 'svelte-i18n';
+	import { t, setupI18n, setAppLocale, SUPPORTED_LOCALES, type AppLocale } from '$lib/i18n';
+
+	// 启动即确定语言（localStorage 优先，其次浏览器语言）
+	setupI18n();
 
 	let { children } = $props();
 
@@ -35,15 +40,15 @@
 	});
 
 	const nav = $state([
-		{ href: '/', label: '概览', icon: 'grid' },
-		{ href: '/messages', label: '消息', icon: 'msg' },
-		{ href: '/projects', label: '项目', icon: 'box' },
-		{ href: '/tasks', label: '任务', icon: 'check' },
-		{ href: '/plans', label: '规划', icon: 'flow' },
-		{ href: '/team', label: '团队', icon: 'users' },
-		{ href: '/reports', label: '报表', icon: 'chart' },
-		{ href: '/me', label: '我', icon: 'user' },
-		{ href: '/settings', label: '设置', icon: 'gear' }
+		{ href: '/', key: 'nav.overview', icon: 'grid' },
+		{ href: '/messages', key: 'nav.messages', icon: 'msg' },
+		{ href: '/projects', key: 'nav.projects', icon: 'box' },
+		{ href: '/tasks', key: 'nav.tasks', icon: 'check' },
+		{ href: '/plans', key: 'nav.plans', icon: 'flow' },
+		{ href: '/team', key: 'nav.team', icon: 'users' },
+		{ href: '/reports', key: 'nav.reports', icon: 'chart' },
+		{ href: '/me', key: 'nav.me', icon: 'user' },
+		{ href: '/settings', key: 'nav.settings', icon: 'gear' }
 	]);
 
 	const notifications = $state([
@@ -72,10 +77,10 @@
 
 	/** 通知分类：@我 / 任务状态变更 / 新的动态 */
 	type NotifCat = 'mention' | 'task' | 'feed';
-	const NOTIF_CATS: { value: NotifCat; label: string }[] = [
-		{ value: 'mention', label: '@我' },
-		{ value: 'task', label: '任务状态变更' },
-		{ value: 'feed', label: '新的动态' }
+	const NOTIF_CATS: { value: NotifCat; key: string }[] = [
+		{ value: 'mention', key: 'notif.catMention' },
+		{ value: 'task', key: 'notif.catTask' },
+		{ value: 'feed', key: 'notif.catFeed' }
 	];
 	// 各分类未读数：静态数据，仅用于标签角标展示
 	const catUnread: Record<NotifCat, number> = { mention: 1, task: 1, feed: 1 };
@@ -182,7 +187,7 @@
 							<path d="M19.4 15a1.7 1.7 0 00.35 1.9l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.9-.35 1.7 1.7 0 00-1 1.55V21a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1.1-1.55 1.7 1.7 0 00-1.9.35l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.35-1.9 1.7 1.7 0 00-1.55-1H3a2 2 0 110-4h.09a1.7 1.7 0 001.55-1.1 1.7 1.7 0 00-.35-1.9l-.06-.06A2 2 0 117.06 6.4l.06.06a1.7 1.7 0 001.9.35h.08a1.7 1.7 0 001-1.55V5a2 2 0 114 0v.08a1.7 1.7 0 001 1.55h.08a1.7 1.7 0 001.9-.35l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.35 1.9v.08a1.7 1.7 0 001.55 1H21a2 2 0 110 4h-.09a1.7 1.7 0 00-1.55 1z" />
 						{/if}
 					</svg>
-					<span>{item.label}</span>
+					<span>{$t(item.key)}</span>
 				</a>
 			{/each}
 		</nav>
@@ -195,7 +200,7 @@
 				onclick={openAccount}
 				aria-haspopup="menu"
 				aria-expanded={accountOpen}
-				title="账号"
+				title={$t('account.title')}
 			>
 				<span class="avatar" style="background:{ME()?.color ?? '#33333c'}">{ME()?.initials ?? '--'}</span>
 				<div class="foot-meta">
@@ -204,7 +209,7 @@
 				</div>
 				<span class="foot-more" aria-hidden="true">⋯</span>
 			</button>
-			<div class="foot-hint">所有数据保存在本地</div>
+			<div class="foot-hint">{$t('account.localOnlyHint')}</div>
 		</div>
 	</aside>
 
@@ -212,18 +217,32 @@
 		<header class="topbar">
 			<div class="crumb">
 				<span class="crumb-dot" aria-hidden="true"></span>
-				工作区
+				{$t('nav.overview')}
 			</div>
 			<div class="search" role="search">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<circle cx="11" cy="11" r="7" />
 					<path d="M21 21l-4.3-4.3" />
 				</svg>
-				<input type="text" placeholder="搜索项目、文件或命令…" aria-label="全局搜索" />
+				<input type="text" placeholder={$t('search.placeholder')} aria-label={$t('search.aria')} />
 				<kbd>⌘ K</kbd>
 			</div>
 			<div class="topbar-actions">
-				<button class="icon-btn notif-btn" aria-label="通知" title="通知" onclick={openDrawer}>
+				<!-- 语言切换：右上角下拉 -->
+				<label class="lang-picker" title={$t('common.language')}>
+					<span class="lang-globe" aria-hidden="true">🌐</span>
+					<select
+						class="lang-select"
+						value={$locale}
+						onchange={(e) => setAppLocale(e.currentTarget.value as AppLocale)}
+						aria-label={$t('common.language')}
+					>
+						{#each SUPPORTED_LOCALES as l}
+							<option value={l.value}>{l.label}</option>
+						{/each}
+					</select>
+				</label>
+				<button class="icon-btn notif-btn" aria-label={$t('notif.aria')} title={$t('notif.title')} onclick={openDrawer}>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
 						<path d="M13.7 21a2 2 0 01-3.4 0" />
@@ -255,7 +274,7 @@
 		aria-modal="true"
 		aria-labelledby="notif-title"
 	>
-		<button class="drawer-close" onclick={closeDrawer} aria-label="关闭" title="关闭">
+		<button class="drawer-close" onclick={closeDrawer} aria-label={$t('common.close')} title={$t('common.close')}>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M18 6L6 18M6 6l12 12" />
 			</svg>
@@ -275,13 +294,13 @@
 						</p>
 					</div>
 					{#if unreadCount > 0}
-						<button class="notif-clear" onclick={markAllRead} aria-label="全部标为已读" title="全部标为已读">
+						<button class="notif-clear" onclick={markAllRead} aria-label={$t('notif.allRead')} title={$t('notif.allRead')}>
 							全部已读
 						</button>
 					{/if}
 				</header>
 
-				<div class="notif-tabs" role="tablist" aria-label="通知分类">
+				<div class="notif-tabs" role="tablist" aria-label={$t('notif.tabsAria')}>
 					<button
 						type="button"
 						class="notif-tab"
@@ -302,7 +321,7 @@
 							aria-selected={notifCat === c.value}
 							onclick={() => (notifCat = c.value)}
 						>
-							{c.label}
+							{$t(c.key)}
 							{#if catUnread[c.value] > 0}
 								<span class="notif-tab-num">{catUnread[c.value]}</span>
 							{/if}
@@ -311,7 +330,7 @@
 				</div>
 
 				{#if shownNotifications.length === 0}
-					<p class="notif-empty">该分类暂无通知，休息一下吧。</p>
+					<p class="notif-empty">{$t('notif.empty')}</p>
 				{:else}
 					<ul class="notif-list">
 						{#each shownNotifications as n, i}
@@ -324,7 +343,7 @@
 									<div class="notif-title-row">
 										<span class="notif-title"
 											>{n.title}{#if i < unreadCount}
-												<span class="notif-dot" aria-label="未读" title="未读"></span>
+												<span class="notif-dot" aria-label={$t('notif.unread')} title={$t('notif.unread')}></span>
 											{/if}</span
 										>
 									</div>
@@ -350,14 +369,14 @@
 				<h2 id="account-title">{ME()?.name ?? '未登录'}</h2>
 				<span class="acc-sub">{ME()?.role ?? ''}{ME()?.title ? ` · ${ME()!.title}` : ''}</span>
 			</div>
-			<button class="drawer-close acc-close" onclick={closeAccount} aria-label="关闭" title="关闭">
+			<button class="drawer-close acc-close" onclick={closeAccount} aria-label={$t('common.close')} title={$t('common.close')}>
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M18 6L6 18M6 6l12 12" />
 				</svg>
 			</button>
 		</header>
 
-		<p class="acc-email">{ME()?.email ?? ''} · 加入于 {ME()?.createdAt?.slice(0, 10) ?? '—'}</p>
+		<p class="acc-email">{ME()?.email ?? ''} · {$t('account.joinedAt')} {ME()?.createdAt?.slice(0, 10) ?? '—'}</p>
 
 		<ul class="acc-menu" role="menu">
 			<li>
@@ -375,7 +394,7 @@
 						<circle cx="12" cy="12" r="3" />
 						<path d="M4 20V10M10 20V4M16 20v-7M21 20H3" />
 					</svg>
-					<span>工作区设置</span>
+					<span>{$t('settings.title')}</span>
 				</a>
 			</li>
 		</ul>
@@ -755,6 +774,42 @@
 		align-items: center;
 		gap: var(--space-3);
 		margin-left: auto;
+	}
+	/* 语言切换下拉：图标 + 原生 select（去掉默认外观） */
+	.lang-picker {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 10px;
+		border: 1px solid var(--line);
+		border-radius: 9px;
+		background: var(--bg-2);
+		cursor: pointer;
+	}
+	.lang-picker:hover {
+		border-color: var(--line-strong);
+	}
+	.lang-globe {
+		font-size: 0.85rem;
+		line-height: 1;
+	}
+	.lang-select {
+		border: none;
+		background: transparent;
+		color: var(--text-1);
+		font-family: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		appearance: none;
+		padding-right: 4px;
+	}
+	.lang-select:focus {
+		outline: none;
+	}
+	.lang-select option {
+		background: var(--bg-1);
+		color: var(--text-0);
 	}
 	.icon-btn {
 		display: grid;

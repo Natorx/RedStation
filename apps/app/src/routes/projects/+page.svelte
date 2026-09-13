@@ -15,6 +15,17 @@
 		type ProjectUI
 	} from '$lib/stores/workspace.svelte';
 	import { ApiError, TASK_CATEGORIES, type ApiProject, type ApiProjectTask, type ApiTaskCategory } from '$lib/api/client';
+	import { t } from '$lib/i18n';
+
+	/** 任务类别 -> i18n 键：存储值仍是中文，仅展示层翻译 */
+	const CAT_KEY: Record<string, string> = {
+		功能: 'taskCategory.功能',
+		新模块: 'taskCategory.新模块',
+		优化: 'taskCategory.优化',
+		UI: 'taskCategory.UI',
+		运维: 'taskCategory.运维',
+		设计: 'taskCategory.设计'
+	};
 
 	/** 项目列表（后端数据） */
 	const projects = $derived(PROJECTS());
@@ -56,7 +67,7 @@
 				inputEl?.focus();
 			})
 			.catch((err: unknown) => {
-				taskError = err instanceof ApiError ? err.message : '添加失败，请稍后重试';
+				taskError = err instanceof ApiError ? err.message : $t('common.failed');
 			})
 			.finally(() => {
 				addingTask = false;
@@ -88,7 +99,7 @@
 	async function saveEditTask(taskId: number) {
 		const title = editTitle.trim();
 		if (!title) {
-			editError = '任务标题不能为空';
+			editError = $t('projects.taskTitleRequired');
 			return;
 		}
 		savingTask = true;
@@ -97,7 +108,7 @@
 			await updateProjectTask(taskId, { title, category: editCategory });
 			editingTaskId = null;
 		} catch (err) {
-			editError = err instanceof ApiError ? err.message : '保存失败，请稍后重试';
+			editError = err instanceof ApiError ? err.message : $t('common.failed');
 		} finally {
 			savingTask = false;
 		}
@@ -111,8 +122,8 @@
 	// 保存中标记，避免重复提交
 	let saving = $state(false);
 
-	const formTitle = $derived(editingId !== null ? '编辑项目' : '新建项目');
-	const formSubmitText = $derived(editingId !== null ? '保存修改' : '创建项目');
+	const formTitle = $derived(editingId !== null ? $t('projects.editProject') : $t('projects.newProject'));
+	const formSubmitText = $derived(editingId !== null ? $t('projects.submitSave') : $t('projects.submitCreate'));
 
 	let fLabel = $state('');
 	let fTag = $state('');
@@ -206,7 +217,7 @@
 		if (saving) return;
 		const label = fLabel.trim();
 		if (!label) {
-			formError = '请填写项目名';
+			formError = $t('projects.labelRequired');
 			return;
 		}
 		// 输入框里还没回车的框架一并收进来
@@ -242,7 +253,7 @@
 			}
 			closeForm();
 		} catch (err) {
-			formError = err instanceof ApiError ? err.message : '保存失败，请稍后重试';
+			formError = err instanceof ApiError ? err.message : $t('common.failed');
 		} finally {
 			saving = false;
 		}
@@ -294,7 +305,7 @@
 			if (detailId === id) closeDetail();
 			if (activeId === id) activeId = null;
 		} catch (err) {
-			deleteError = err instanceof ApiError ? err.message : '删除失败，请稍后重试';
+			deleteError = err instanceof ApiError ? err.message : $t('common.failed');
 		} finally {
 			deleting = false;
 		}
@@ -316,8 +327,8 @@
 	<aside class="proj-side card">
 		<header class="side-head">
 			<div class="side-title-row">
-				<h2>项目</h2>
-				<button class="btn-mini" onclick={openForm} title="新建项目">+ 新建</button>
+				<h2>{$t('projects.title')}</h2>
+				<button class="btn-mini" onclick={openForm} title={$t('projects.newProject')}>{$t('projects.new')}</button>
 			</div>
 			<p class="side-sub">{projects.length} 个项目 · {totalTasks} 项任务</p>
 		</header>
@@ -334,7 +345,7 @@
 						<span class="proj-row-top">
 							<span class="proj-name">{p.label}</span>
 							{#if p.unread && p.tasks.length > 0}
-								<span class="dot-new" title="有新任务"></span>
+								<span class="dot-new" title={$t('projects.addTask')}></span>
 							{/if}
 						</span>
 						<span
@@ -375,12 +386,12 @@
 					<h2>{active.label}</h2>
 					<p class="main-sub">
 						{active.tasks.length > 0
-							? `${active.tasks.length} 项任务 · ${active.tasks.filter((t) => t.done).length} 项已完成`
-							: '暂无任务，添加第一条吧'}
+							? $t('projects.taskFooter', { values: { total: active.tasks.length, done: active.tasks.filter((x) => x.done).length } })
+							: $t('projects.noTasks')}
 					</p>
 				</div>
 				<button class="link-btn" onclick={() => (detailOpen ? closeDetail() : openDetail(active))}>
-					{detailOpen ? '收起详情 ←' : '查看项目详情 →'}
+					{detailOpen ? $t('projects.hideDetail') : $t('projects.viewDetail')}
 				</button>
 			</header>
 
@@ -390,20 +401,20 @@
 					class="input"
 					type="text"
 					bind:value={newTask}
-					placeholder="添加任务，回车确认…"
+					placeholder={$t('projects.addTaskPlaceholder')}
 					aria-label="新任务名称"
 				/>
 				<select
 					class="cat-select"
 					bind:value={newCategory}
-					aria-label="任务类别"
-					title="任务类别"
+					aria-label={$t('projects.taskCategory')}
+					title={$t('projects.taskCategory')}
 				>
 					{#each TASK_CATEGORIES as c}
-						<option value={c}>{c}</option>
+						<option value={c}>{$t(CAT_KEY[c])}</option>
 					{/each}
 				</select>
-				<button class="btn btn-primary" type="submit">添加任务</button>
+				<button class="btn btn-primary" type="submit">{$t('projects.addTask')}</button>
 			</form>
 
 			{#if active.tasks.length > 0}
@@ -426,8 +437,8 @@
 									<input
 										class="input edit-title"
 										bind:value={editTitle}
-										placeholder="任务标题"
-										aria-label="任务标题"
+										placeholder={$t('projects.taskTitle')}
+										aria-label={$t('projects.taskTitle')}
 										onkeydown={(e) => {
 											if (e.key === 'Enter') saveEditTask(task.id);
 											if (e.key === 'Escape') cancelEditTask();
@@ -440,10 +451,10 @@
 										title="任务类别"
 									>
 										{#each TASK_CATEGORIES as c}
-											<option value={c}>{c}</option>
+											<option value={c}>{$t(CAT_KEY[c])}</option>
 										{/each}
 									</select>
-									<span class="act-time">发布于 {task.date} · {task.ago}</span>
+									<span class="act-time">{$t('projects.publishedAt')} {task.date} · {task.ago}</span>
 									{#if editError}<span class="task-edit-err">{editError}</span>{/if}
 									<div class="task-edit-actions">
 										<button
@@ -467,19 +478,19 @@
 								<button
 									type="button"
 									class="task-main"
-									title="点击编辑标题与类别"
+									title={$t('projects.editTaskHint')}
 									onclick={() => startEditTask(task)}
 								>
 									<span class="todo-text">{task.title}</span>
-									<span class="cat-tag">{task.category}</span>
+									<span class="cat-tag">{$t(CAT_KEY[task.category])}</span>
 								</button>
-								<span class="act-time">发布于 {task.date} · {task.ago}</span>
+								<span class="act-time">{$t('projects.publishedAt')} {task.date} · {task.ago}</span>
 								<span class="todo-author">{task.author}</span>
 								<button
 									type="button"
 									class="del"
-									title="删除任务"
-									aria-label="删除任务"
+									title={$t('projects.deleteTask')}
+									aria-label={$t('projects.deleteTask')}
 									onclick={() => removeProjectTask(task.id)}
 								>
 									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -491,7 +502,7 @@
 					{/each}
 				</ul>
 			{:else}
-				<p class="empty-tip">该项目还没有任务，用上方输入框添加。</p>
+				<p class="empty-tip">{$t('projects.noTasks')}</p>
 			{/if}
 
 			<footer class="main-foot">
@@ -507,35 +518,35 @@
 				<div>
 					<span class="board-tag {detail.color}">{detail.tag}</span>
 					<h2 id="detail-title">{detail.label}</h2>
-					<p class="detail-sub">{detail.purpose || '未填写用途'}</p>
+					<p class="detail-sub">{detail.purpose || $t('projects.noPurpose')}</p>
 				</div>
-				<button class="detail-close" onclick={closeDetail} aria-label="收起详情">✕</button>
+				<button class="detail-close" onclick={closeDetail} aria-label={$t('projects.hideDetail')}>✕</button>
 			</header>
 
 			<div class="detail-actions">
-				<button class="btn-edit" onclick={() => openEdit(detail)}>编辑项目</button>
-				<button class="btn-danger" onclick={() => askDelete(detail.id)}>删除</button>
+				<button class="btn-edit" onclick={() => openEdit(detail)}>{$t('projects.editProject')}</button>
+				<button class="btn-danger" onclick={() => askDelete(detail.id)}>{$t('common.delete')}</button>
 			</div>
 
 			<div class="meta-grid">
 				<div class="meta">
-					<span class="meta-k">UI 形式</span>
+					<span class="meta-k">{$t('projects.uiform')}</span>
 					<span class="meta-v">{detail.ui}</span>
 				</div>
 				<div class="meta">
-					<span class="meta-k">服务器部署</span>
+					<span class="meta-k">{$t('projects.deployed')}</span>
 					<span class="meta-v" class:yes={detail.deployed}>{detail.deployed ? 'Yes' : 'No'}</span>
 				</div>
 				<div class="meta">
-					<span class="meta-k">运行端口</span>
+					<span class="meta-k">{$t('projects.runPort')}</span>
 					<span class="meta-v" class:yes={!!detail.runPort}>{detail.runPort || '—'}</span>
 				</div>
 				<div class="meta">
-					<span class="meta-k">发起人</span>
+					<span class="meta-k">{$t('projects.owner')}</span>
 					<span class="meta-v">{detail.owner || '—'}</span>
 				</div>
 				<div class="meta">
-					<span class="meta-k">任务数</span>
+					<span class="meta-k">{$t('projects.taskCount')}</span>
 					<span class="meta-v"
 						>{detail.tasks.filter((t) => t.done).length}/{detail.tasks.length}</span
 					>
@@ -543,17 +554,17 @@
 			</div>
 
 			<div class="field">
-				<span class="field-label">用途</span>
+				<span class="field-label">{$t('projects.purpose')}</span>
 				<p class="detail-text">{detail.purpose || '—'}</p>
 			</div>
 
 			<div class="field">
-				<span class="field-label">介绍</span>
+				<span class="field-label">{$t('projects.intro')}</span>
 				<p class="detail-text">{detail.intro || '—'}</p>
 			</div>
 
 			<div class="field">
-				<span class="field-label">技术栈</span>
+				<span class="field-label">{$t('projects.stack')}</span>
 				<div class="chips">
 					{#each detail.stack as s}
 						<span class="chip on">{s}</span>
@@ -564,7 +575,7 @@
 			</div>
 
 			<div class="field">
-				<span class="field-label">框架</span>
+				<span class="field-label">{$t('projects.frameworks')}</span>
 				<div class="chips">
 					{#each detail.frameworks as f}
 						<span class="chip on">{f}</span>
@@ -601,17 +612,17 @@
 		<form class="drawer-body" onsubmit={submitProject}>
 			<div class="grid-2">
 				<label class="field">
-					<span class="field-label">项目名 *</span>
-					<input class="input" type="text" bind:value={fLabel} placeholder="例如 RedStation" />
+					<span class="field-label">{$t('projects.label')}</span>
+					<input class="input" type="text" bind:value={fLabel} placeholder={$t('projects.labelPlaceholder')} />
 				</label>
 				<label class="field">
-					<span class="field-label">标签</span>
-					<input class="input" type="text" bind:value={fTag} placeholder="例如 工作台" />
+					<span class="field-label">{$t('projects.tag')}</span>
+					<input class="input" type="text" bind:value={fTag} placeholder={$t('projects.tagPlaceholder')} />
 				</label>
 			</div>
 
 			<label class="field">
-				<span class="field-label">UI 形式</span>
+				<span class="field-label">{$t('projects.uiform')}</span>
 				<select class="input select" bind:value={fUi}>
 					{#each UI_OPTIONS as u}
 						<option value={u}>{u}</option>
@@ -620,18 +631,18 @@
 			</label>
 
 			<label class="field">
-				<span class="field-label">用途</span>
-				<input class="input" type="text" bind:value={fPurpose} placeholder="一句话说明这个项目做什么" />
+				<span class="field-label">{$t('projects.purpose')}</span>
+				<input class="input" type="text" bind:value={fPurpose} placeholder={$t('projects.purposePlaceholder')} />
 			</label>
 
 			<label class="field">
-				<span class="field-label">介绍</span>
-				<textarea class="textarea" rows="4" bind:value={fIntro} placeholder="项目背景、目标与范围…"
+				<span class="field-label">{$t('projects.intro')}</span>
+				<textarea class="textarea" rows="4" bind:value={fIntro} placeholder={$t('projects.introPlaceholder')}
 				></textarea>
 			</label>
 
 			<div class="field">
-				<span class="field-label">技术栈（可多选）</span>
+				<span class="field-label">{$t('projects.stack')}</span>
 				<div class="chips">
 					{#each STACK_OPTIONS as lang}
 						<button
@@ -645,14 +656,14 @@
 			</div>
 
 			<div class="field">
-				<span class="field-label">框架（可输入多个，回车确认）</span>
+				<span class="field-label">{$t('projects.frameworks')}</span>
 				<input
 					class="input"
 					type="text"
 					bind:value={fFramework}
 					onkeydown={onFrameworkKey}
 					onblur={commitFramework}
-					placeholder="例如 SvelteKit，输入后按回车"
+					placeholder={$t('projects.frameworkPlaceholder')}
 				/>
 				{#if fFrameworks.length}
 					<div class="chips tag-chips">
@@ -673,29 +684,29 @@
 
 			<div class="grid-2">
 				<label class="field">
-					<span class="field-label">是否服务器部署</span>
+					<span class="field-label">{$t('projects.deployed')}</span>
 					<select class="input select" bind:value={fDeployed}>
 						<option value={false}>No</option>
 						<option value={true}>Yes</option>
 					</select>
 				</label>
 				<label class="field">
-					<span class="field-label">标签配色</span>
+					<span class="field-label">{$t('projects.tagColor')}</span>
 					<select class="input select" bind:value={fColor}>
 						{#each COLOR_OPTIONS as c}
-							<option value={c}>{c}</option>
+							<option value={c}>{$t(CAT_KEY[c])}</option>
 						{/each}
 					</select>
 				</label>
 			</div>
 
 			<label class="field">
-				<span class="field-label">运行端口</span>
+				<span class="field-label">{$t('projects.runPort')}</span>
 				<input
 					class="input"
 					type="text"
 					bind:value={fRunPort}
-					placeholder="如 3010；多个用逗号分隔，如 3010,3011"
+					placeholder={$t('projects.portPlaceholder')}
 				/>
 			</label>
 
@@ -704,9 +715,9 @@
 			{/if}
 
 			<footer class="drawer-foot">
-				<button type="button" class="btn btn-ghost" onclick={closeForm}>取消</button>
+				<button type="button" class="btn btn-ghost" onclick={closeForm}>{$t('common.cancel')}</button>
 				<button type="submit" class="btn btn-primary" disabled={saving}>
-					{saving ? '保存中…' : formSubmitText}
+					{saving ? $t('common.saving') : formSubmitText}
 				</button>
 			</footer>
 		</form>
@@ -721,15 +732,15 @@
 		role="presentation"
 	></div>
 	<div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="del-modal-title">
-		<h3 id="del-modal-title" class="modal-title">删除项目？</h3>
+		<h3 id="del-modal-title" class="modal-title">{$t('projects.deleteTitle')}</h3>
 		<p class="modal-text">
-			确定删除「<strong>{deleteTarget.label}</strong>」？该项目的 {deleteTarget.tasks.length} 条任务会一并删除，且不可恢复。
+			{$t('projects.deleteBody', { values: { name: deleteTarget.label, count: deleteTarget.tasks.length } })}
 		</p>
 		{#if deleteError}<p class="form-error">{deleteError}</p>{/if}
 		<div class="modal-actions">
-			<button class="btn-ghost" onclick={cancelDelete} disabled={deleting}>取消</button>
+			<button class="btn-ghost" onclick={cancelDelete} disabled={deleting}>{$t('common.cancel')}</button>
 			<button class="btn-danger on" onclick={() => doDelete(deleteTarget.id)} disabled={deleting}>
-				{deleting ? '删除中…' : '确认删除'}
+				{deleting ? $t('common.deleting') : $t('projects.confirmDelete')}
 			</button>
 		</div>
 	</div>

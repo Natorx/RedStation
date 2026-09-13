@@ -14,6 +14,18 @@
 		type PostType
 	} from '$lib/stores/workspace.svelte';
 	import { ApiError, type ApiProject } from '$lib/api/client';
+	import { t } from '$lib/i18n';
+	import { get } from 'svelte/store';
+
+	/** 任务类型 -> i18n 键，存储值仍是中文，仅展示层翻译 */
+	const TYPE_KEY: Record<string, string> = {
+		开发: 'tasks.typeDev',
+		设计: 'tasks.typeDesign',
+		文档: 'tasks.typeDoc',
+		运维: 'tasks.typeOps',
+		调研: 'tasks.typeResearch',
+		其他: 'tasks.typeOther'
+	};
 
 	/** 后端数据（容器在 store，用函数取值保持响应式） */
 	const board = $derived(PROJECTS());
@@ -21,6 +33,7 @@
 	const activity = $derived(ACTIVITIES());
 
 	// 任务列表：与任务页共用同一份待办数据
+
 	const runningCount = $derived(todos.filter((t) => !t.done).length);
 	const doneCount = $derived(todos.filter((t) => t.done).length);
 
@@ -35,11 +48,11 @@
 	// 顶部数据卡片：任务数与项目数取自后端数据
 	// 「平均专注时长」前端无数据来源，暂用占位并标注为静态值
 	const stats = $derived([
-		{ label: '进行中的任务', value: String(runningCount), trend: '', up: true },
-		{ label: '已完成', value: String(doneCount), trend: '', up: true },
-		{ label: '项目', value: String(board.length), trend: '', up: true },
+		{ label: get(t)('overview.statOpen'), value: String(runningCount), trend: '', up: true },
+		{ label: get(t)('overview.statDone'), value: String(doneCount), trend: '', up: true },
+		{ label: get(t)('overview.statProjects'), value: String(board.length), trend: '', up: true },
 		{
-			label: '平均专注时长',
+			label: get(t)('overview.statFocus'),
 			value: '—',
 			trend: '',
 			up: false,
@@ -70,17 +83,23 @@
 	}
 
 	// 优先级显示文案
-	const PRIO_LABEL: Record<string, string> = { high: '高', medium: '中', low: '低' };
+	/** 优先级标签，随语言切换 */
+	const PRIO_LABEL = $derived({
+		high: $t('tasks.prioHigh'),
+		medium: $t('tasks.prioMedium'),
+		low: $t('tasks.prioLow')
+	} as Record<string, string>);
 
 	/** 截止时间文案：把后端的 ISO 时间转成「今天 / 2 天」这类相对描述 */
 	function relDue(iso: string): string {
 		const due = new Date(iso).getTime();
 		const now = Date.now();
 		const days = Math.ceil((due - now) / (24 * 60 * 60 * 1000));
-		if (days < 0) return '已逾期';
-		if (days === 0) return '今天';
-		if (days === 1) return '明天';
-		return `${days} 天`;
+		const tr = get(t);
+		if (days < 0) return tr('tasks.overdue');
+		if (days === 0) return tr('tasks.today');
+		if (days === 1) return tr('tasks.tomorrow');
+		return tr('tasks.daysLater', { values: { days } });
 	}
 
 	// 发布动态：表单内容
@@ -169,14 +188,14 @@
 <div class="dash">
 	<section class="hero card">
 		<div class="hero-text">
-			<span class="eyebrow">仪表盘 · Dashboard</span>
-			<h1>下午好，开始今天的工作 ✦</h1>
+			<span class="eyebrow">{$t('overview.eyebrow')}</span>
+			<h1>{$t('overview.heroTitle')} ✦</h1>
 			<p class="lead">
-				你有 <b>{runningCount}</b> 个任务待办，<b>{projTaskOpen}</b> 个项目任务待办，<b>{doneCount}</b> 个已完成。
+				{$t('overview.heroLead', { values: { running: runningCount, proj: projTaskOpen, done: doneCount } })}
 			</p>
 			<div class="hero-actions">
-				<a class="btn btn-primary" href="/tasks">查看今日任务</a>
-				<a class="btn btn-ghost" href="/projects">浏览项目</a>
+				<a class="btn btn-primary" href="/tasks">{$t('overview.viewToday')}</a>
+				<a class="btn btn-ghost" href="/projects">{$t('overview.browseProjects')}</a>
 			</div>
 		</div>
 		<!-- 装饰区域 -->
@@ -193,7 +212,7 @@
 			<div class="card stat">
 				<span class="stat-label">{s.label}</span>
 				<div class="stat-val">{s.value}</div>
-				<span class="trend" class:down={!s.up}>{s.up ? '▲' : '▼'} {s.trend} 较上周</span>
+				<span class="trend" class:down={!s.up}>{s.up ? '▲' : '▼'} {s.trend} {$t('overview.vsLastWeek')}</span>
 			</div>
 		{/each}
 	</section>
@@ -202,10 +221,10 @@
 		<section class="card chart-card">
 			<header class="card-head">
 				<div>
-					<h2>任务列表</h2>
-					<p class="sub">全部项目任务 · 点击勾选完成</p>
+					<h2>{$t('overview.tasksTitle')}</h2>
+					<p class="sub">{$t('overview.tasksSub')}</p>
 				</div>
-				<a class="link" href="/tasks">全部任务 →</a>
+				<a class="link" href="/tasks">{$t('overview.allTasks')} →</a>
 			</header>
 			<div class="todo-list">
 				{#each todos as todo (todo.id)}
@@ -217,11 +236,11 @@
 							aria-label={todo.text}
 						/>
 						<span class="todo-box" aria-hidden="true"></span>
-						<span class="prio {todo.priority}" title="优先级">{PRIO_LABEL[todo.priority]}</span>
+						<span class="prio {todo.priority}" title={$t('tasks.priority')}>{PRIO_LABEL[todo.priority]}</span>
 						<span class="todo-text">{todo.text}</span>
 						{#if todo.dueAt}<span class="todo-due">{relDue(todo.dueAt)}</span>{/if}
 						<span class="todo-author-sm">{todo.author}</span>
-						<span class="todo-tag {todoColor(todo.type)}">{todo.type}</span>
+						<span class="todo-tag {todoColor(todo.type)}">{$t(TYPE_KEY[todo.type])}</span>
 					</label>
 				{/each}
 			</div>
@@ -323,7 +342,7 @@
 									<span class="todo-box" aria-hidden="true"></span>
 								</label>
 								<span class="todo-text">{task.title}</span>
-								<span class="act-time">发布于 {task.date} · {task.ago}</span>
+								<span class="act-time">{$t('projects.publishedAt')} {task.date} · {task.ago}</span>
 								<span class="todo-author">{task.author}</span>
 							</li>
 						{/each}
@@ -347,8 +366,8 @@
 
 			<div class="drawer-inner">
 				<div class="form">
-					<h2 id="drawer-title">发布一条动态</h2>
-					<p class="form-sub">分享进展，用 @ 提及团队成员一起协作</p>
+					<h2 id="drawer-title">{$t('overview.publishTitle')}</h2>
+					<p class="form-sub">{$t('overview.publishSub')}</p>
 
 					<label class="field">
 						<span class="field-label">内容 *</span>
@@ -358,7 +377,7 @@
 							maxlength="500"
 							bind:this={mentionInput}
 							bind:value={draft}
-							placeholder="记录你刚刚完成的工作、遇到的挑战或下一步计划…"
+							placeholder={$t('overview.publishPlaceholder')}
 						></textarea>
 						<span class="count">{draft.length} / 500</span>
 					</label>

@@ -13,8 +13,24 @@
 		type Priority
 	} from '$lib/stores/workspace.svelte';
 	import { ApiError } from '$lib/api/client';
+	import { t } from '$lib/i18n';
+	import { get } from 'svelte/store';
+	/** 任务类型 -> i18n 键，展示层翻译，存储值仍是中文 */
+	const TYPE_KEY: Record<string, string> = {
+		开发: 'tasks.typeDev',
+		设计: 'tasks.typeDesign',
+		文档: 'tasks.typeDoc',
+		运维: 'tasks.typeOps',
+		调研: 'tasks.typeResearch',
+		其他: 'tasks.typeOther'
+	};
 
-	const PRIO_LABEL: Record<string, string> = { high: '高', medium: '中', low: '低' };
+	/** 优先级标签，随语言切换 */
+	const PRIO_LABEL = $derived({
+		high: $t('tasks.prioHigh'),
+		medium: $t('tasks.prioMedium'),
+		low: $t('tasks.prioLow')
+	} as Record<string, string>);
 
 	/** 待办列表（后端数据，容器在 store 里） */
 	const todos = $derived(TODOS());
@@ -140,19 +156,21 @@
 	/** 相对时间描述 */
 	function relTime(ts: number) {
 		const d = Math.floor((Date.now() - ts) / DAY);
-		if (d <= 0) return '今天';
-		if (d === 1) return '昨天';
-		return `${d} 天前`;
+		const tr = get(t);
+		if (d <= 0) return tr('tasks.today');
+		if (d === 1) return tr('tasks.yesterday');
+		return tr('tasks.daysAgo', { values: { days: d } });
 	}
 
 	/** 截止时间文案：把后端的 ISO 时间转成「今天 / 2 天」这类相对描述 */
 	function relDue(iso: string): string {
 		const due = new Date(iso).getTime();
 		const days = Math.ceil((due - Date.now()) / DAY);
-		if (days < 0) return '已逾期';
-		if (days === 0) return '今天';
-		if (days === 1) return '明天';
-		return `${days} 天`;
+		const tr = get(t);
+		if (days < 0) return tr('tasks.overdue');
+		if (days === 0) return tr('tasks.today');
+		if (days === 1) return tr('tasks.tomorrow');
+		return tr('tasks.daysLater', { values: { days } });
 	}
 
 	/** 按创建时间倒序（最新在前） */
@@ -183,7 +201,7 @@
 	function submitTask(e: SubmitEvent) {
 		e.preventDefault();
 		if (!nText.trim()) {
-			formError = '请填写任务内容';
+			formError = $t('tasks.contentRequired');
 			return;
 		}
 		submitting = true;
@@ -213,19 +231,19 @@
 	<!-- 汇总 -->
 	<section class="stat-grid">
 		<div class="card stat">
-			<span class="stat-label">全部任务</span>
+			<span class="stat-label">{$t('tasks.allStat')}</span>
 			<div class="stat-val">{stats.total}</div>
 		</div>
 		<div class="card stat">
-			<span class="stat-label">进行中</span>
+			<span class="stat-label">{$t('tasks.openStat')}</span>
 			<div class="stat-val">{stats.open}</div>
 		</div>
 		<div class="card stat">
-			<span class="stat-label">高优先级待办</span>
+			<span class="stat-label">{$t('tasks.highStat')}</span>
 			<div class="stat-val hi">{stats.high}</div>
 		</div>
 		<div class="card stat">
-			<span class="stat-label">当前筛选结果</span>
+			<span class="stat-label">{$t('tasks.resultStat')}</span>
 			<div class="stat-val">{sorted.length}</div>
 		</div>
 	</section>
@@ -235,14 +253,14 @@
 	<section class="card filters">
 		<div class="filter-row">
 			<div class="fgroup">
-				<span class="flabel">类型</span>
+				<span class="flabel">{$t('tasks.type')}</span>
 				<div class="seg">
 					<button class="seg-btn" class:active={filterType === 'all'} onclick={() => (filterType = 'all')}>
-						全部
+						{$t('common.all')}
 					</button>
-					{#each TODO_TYPES as t}
-						<button class="seg-btn" class:active={filterType === t} onclick={() => (filterType = t)}>
-							{t}
+					{#each TODO_TYPES as ty}
+						<button class="seg-btn" class:active={filterType === ty} onclick={() => (filterType = ty)}>
+							{$t(TYPE_KEY[ty])}
 						</button>
 					{/each}
 				</div>
@@ -252,7 +270,7 @@
 
 		<div class="filter-row">
 			<div class="fgroup">
-				<span class="flabel">优先级</span>
+				<span class="flabel">{$t('tasks.priority')}</span>
 				<div class="seg">
 					<button
 						class="seg-btn"
@@ -270,16 +288,16 @@
 			</div>
 
 			<div class="fgroup">
-				<span class="flabel">状态</span>
+				<span class="flabel">{$t('tasks.status')}</span>
 				<div class="seg">
 					<button class="seg-btn" class:active={filterDone === 'all'} onclick={() => (filterDone = 'all')}>
-						全部
+						{$t('common.all')}
 					</button>
 					<button class="seg-btn" class:active={filterDone === 'open'} onclick={() => (filterDone = 'open')}>
-						进行中
+						{$t('tasks.inProgress')}
 					</button>
 					<button class="seg-btn" class:active={filterDone === 'done'} onclick={() => (filterDone = 'done')}>
-						已完成
+						{$t('tasks.done')}
 					</button>
 				</div>
 			</div>
@@ -289,7 +307,7 @@
 		<!-- 日历：按创建日期区间筛选 -->
 		<div class="calendar">
 			<div class="cal-head">
-				<span class="flabel">创建日期</span>
+				<span class="flabel">{$t('tasks.createdDate')}</span>
 				{#if filterFrom || filterTo}
 					<button class="cal-clear" onclick={() => { filterFrom = ''; filterTo = ''; }}>重置</button>
 				{/if}
@@ -333,7 +351,7 @@
 
 		<!-- 筛选栏右下方：清除筛选 -->
 		<div class="filters-foot">
-			<button class="btn-ghost" onclick={clearFilters} disabled={!hasFilter}>清除筛选</button>
+			<button class="btn-ghost" onclick={clearFilters} disabled={!hasFilter}>{$t('tasks.clearFilters')}</button>
 		</div>
 	</section>
 
@@ -341,14 +359,14 @@
 	<section class="card">
 		<header class="card-head">
 			<div>
-				<h2>任务列表</h2>
-				<p class="sub">共 {sorted.length} 条 · 按创建时间倒序</p>
+				<h2>{$t('tasks.title')}</h2>
+				<p class="sub">{$t('tasks.total', { values: { count: sorted.length } })}</p>
 			</div>
-			<button class="btn-primary" onclick={openForm}>+ 新建任务</button>
+			<button class="btn-primary" onclick={openForm}>{$t('tasks.newTask')}</button>
 		</header>
 
 		{#if sorted.length === 0}
-			<p class="empty">没有符合条件的任务。</p>
+			<p class="empty">{$t('tasks.noMatch')}</p>
 		{:else}
 			<ul class="todo-list">
 				{#each sorted as todo (todo.id)}
@@ -362,14 +380,14 @@
 							/>
 							<span class="todo-box" aria-hidden="true"></span>
 						</label>
-						<span class="prio {todo.priority}" title="优先级：{PRIO_LABEL[todo.priority]}">
+						<span class="prio {todo.priority}" title={$t('tasks.priority')}>
 							{PRIO_LABEL[todo.priority]}
 						</span>
 						<span class="todo-text">{todo.text}</span>
 						<span class="todo-meta">{relTime(todo.createdAt)}</span>
 						{#if todo.dueAt}<span class="todo-due">{relDue(todo.dueAt)}</span>{/if}
 						<span class="author">{todo.author}</span>
-						<span class="tag {todoColor(todo.type)}">{todo.type}</span>
+						<span class="tag {todoColor(todo.type)}">{$t(TYPE_KEY[todo.type])}</span>
 						<button
 							class="del"
 							title="删除任务"
@@ -394,8 +412,8 @@
 	<aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="task-form-title">
 		<header class="drawer-head">
 			<div>
-				<h2 id="task-form-title">新建任务</h2>
-				<p class="drawer-sub">填写任务内容，创建后可在任务列表中筛选</p>
+				<h2 id="task-form-title">{$t('tasks.newTask')}</h2>
+				<p class="drawer-sub">{$t('projects.detailHint')}</p>
 			</div>
 			<button class="drawer-close" onclick={() => (formOpen = false)} aria-label="关闭">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -406,19 +424,19 @@
 
 		<form class="drawer-body" onsubmit={submitTask}>
 			<label class="field">
-				<span class="field-label">任务内容 *</span>
-				<input class="input" type="text" bind:value={nText} placeholder="例如 修复登录闪退" />
+				<span class="field-label">{$t('tasks.taskContent')}</span>
+				<input class="input" type="text" bind:value={nText} placeholder={$t('tasks.taskContentPlaceholder')} />
 			</label>
 
 			<div class="field">
-				<span class="field-label">类型</span>
+				<span class="field-label">{$t('tasks.type')}</span>
 				<div class="chips">
-					{#each TODO_TYPES as t}
+					{#each TODO_TYPES as ty}
 						<button
 							type="button"
 							class="chip"
-							class:on={nType === t}
-							onclick={() => (nType = t)}>{t}</button
+							class:on={nType === ty}
+							onclick={() => (nType = ty)}>{$t(TYPE_KEY[ty])}</button
 						>
 					{/each}
 				</div>
@@ -453,7 +471,7 @@
 
 			<footer class="drawer-foot">
 				<button type="button" class="btn-ghost" onclick={() => (formOpen = false)}>取消</button>
-				<button type="submit" class="btn-primary">创建任务</button>
+				<button type="submit" class="btn-primary">{$t('tasks.createTask')}</button>
 			</footer>
 		</form>
 	</aside>

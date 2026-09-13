@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { t } from '$lib/i18n';
+
 	type Msg = { from: 'me' | 'them'; text: string; time: string };
 	type Conv = {
 		id: string;
@@ -94,10 +96,10 @@
 	}
 </script>
 
-<svelte:head><title>消息 · RedStation</title></svelte:head>
+<svelte:head><title>{$t('messages.title')} · RedStation</title></svelte:head>
 
 <section class="chat card">
-	<aside class="conv-pane" aria-label="会话列表">
+	<aside class="conv-pane" aria-label={$t('messages.convList')}>
 		<header class="conv-head">
 			<h2>消息</h2>
 			<span class="conv-total">{convos.reduce((n, c) => n + c.unread, 0)} 未读</span>
@@ -107,7 +109,7 @@
 				<circle cx="11" cy="11" r="7" />
 				<path d="M21 21l-4.3-4.3" />
 			</svg>
-			<input type="text" placeholder="搜索会话…" aria-label="搜索会话" />
+			<input type="text" placeholder={$t('messages.searchPlaceholder')} aria-label={$t('messages.searchAria')} />
 		</div>
 		<ul class="conv-list">
 			{#each convos as c}
@@ -121,7 +123,7 @@
 						<span class="conv-meta">
 							<span class="conv-title">
 								{c.name}
-								<span class="dot {c.online ? 'on' : ''}" title={c.online ? '在线' : '离线'}></span>
+								<span class="dot {c.online ? 'on' : ''}" title={c.online ? $t('messages.online') : $t('messages.offline')}></span>
 							</span>
 							<span class="conv-prev">{c.msgs[c.msgs.length - 1]?.text}</span>
 						</span>
@@ -160,8 +162,8 @@
 			<input
 				class="composer-input"
 				type="text"
-				placeholder="输入消息，Enter 发送…"
-				aria-label="消息内容"
+				placeholder={$t('messages.composerPlaceholder')}
+				aria-label={$t('messages.composerAria')}
 				bind:value={draft}
 				onkeydown={onKey}
 			/>

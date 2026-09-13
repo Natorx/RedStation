@@ -10,6 +10,7 @@
 		removePlanStep
 	} from '$lib/stores/workspace.svelte';
 	import { ApiError, type ApiPlan, type ApiStepStatus } from '$lib/api/client';
+	import { t } from '$lib/i18n';
 
 	/** 计划列表（后端数据） */
 	const plans = $derived(PLANS());
@@ -28,11 +29,12 @@
 	const doneSteps = $derived(plans.reduce((n, p) => n + p.stepDone, 0));
 
 	/** 步骤状态的中文标签与配色 */
-	const STATUS_LABEL: Record<ApiStepStatus, string> = {
-		todo: '待开始',
-		doing: '进行中',
-		done: '已完成'
-	};
+/** 步骤状态标签，随语言切换 */
+	const STATUS_LABEL = $derived({
+		todo: $t('plans.statusTodo'),
+		doing: $t('plans.statusDoing'),
+		done: $t('plans.statusDone')
+	} as Record<ApiStepStatus, string>);
 	/** 点击节点时按 todo → doing → done → todo 循环切换 */
 	const STATUS_CYCLE: ApiStepStatus[] = ['todo', 'doing', 'done'];
 
@@ -56,7 +58,7 @@
 	async function submitPlan(e: SubmitEvent) {
 		e.preventDefault();
 		if (!nTitle.trim()) {
-			formError = '请填写计划名';
+			formError = $t('plans.planNameRequired');
 			return;
 		}
 		submitting = true;
@@ -92,7 +94,7 @@
 			stepDraft[planId] = '';
 			stepError[planId] = '';
 		} catch (err) {
-			stepError[planId] = err instanceof ApiError ? err.message : '添加步骤失败';
+			stepError[planId] = err instanceof ApiError ? err.message : $t('plans.stepAddFailed');
 		}
 	}
 
@@ -167,35 +169,35 @@
 <div class="plans-page">
 	<header class="page-head">
 		<div>
-			<h1>规划</h1>
+			<h1>{$t('plans.title')}</h1>
 			<p class="sub">
-				共 {plans.length} 个计划 · {doneSteps}/{totalSteps} 个步骤已完成 · 点击节点切换状态
+				{$t('plans.subtitle', { values: { count: plans.length, done: doneSteps, total: totalSteps } })}
 			</p>
 		</div>
 		<div class="head-actions">
 			<div class="seg">
 				<button class="seg-btn" class:active={filterState === 'all'} onclick={() => (filterState = 'all')}>
-					全部
+					{$t('plans.filterAll')}
 				</button>
 				<button
 					class="seg-btn"
 					class:active={filterState === 'active'}
-					onclick={() => (filterState = 'active')}>进行中</button
+					onclick={() => (filterState = 'active')}>{$t('plans.filterActive')}</button
 				>
 				<button
 					class="seg-btn"
 					class:active={filterState === 'paused'}
-					onclick={() => (filterState = 'paused')}>已暂停</button
+					onclick={() => (filterState = 'paused')}>{$t('plans.filterPaused')}</button
 				>
 			</div>
-			<button class="btn-primary" onclick={openForm}>+ 新建计划</button>
+			<button class="btn-primary" onclick={openForm}>{$t('plans.newPlan')}</button>
 		</div>
 	</header>
 
 	{#if shown.length === 0}
 		<section class="card empty-card">
 			<p class="empty">
-				{plans.length === 0 ? '还没有计划，新建一个开始规划吧。' : '当前筛选下没有计划。'}
+				{plans.length === 0 ? $t('plans.empty') : $t('plans.emptyFiltered')}
 			</p>
 		</section>
 	{:else}
@@ -205,16 +207,16 @@
 					<div class="plan-title-wrap">
 						<h2 class="plan-title">{plan.title}</h2>
 						<span class="state-tag" class:on={plan.active}>
-							{plan.active ? '进行中' : '已暂停'}
+							{plan.active ? $t('plans.active') : $t('plans.paused')}
 						</span>
-						{#if plan.owner}<span class="owner">发起人 {plan.owner}</span>{/if}
+						{#if plan.owner}<span class="owner">{$t('plans.owner')} {plan.owner}</span>{/if}
 					</div>
 					<div class="plan-actions">
-						<span class="progress">{plan.stepDone}/{plan.stepTotal} 步</span>
+						<span class="progress">{$t('plans.steps', { values: { done: plan.stepDone, total: plan.stepTotal } })}</span>
 						<button class="btn-mini" onclick={() => toggleActive(plan)}>
-							{plan.active ? '暂停' : '开启'}
+							{plan.active ? $t('plans.pause') : $t('plans.resume')}
 						</button>
-						<button class="btn-danger" onclick={() => (confirmId = plan.id)}>删除</button>
+						<button class="btn-danger" onclick={() => (confirmId = plan.id)}>{$t('common.delete')}</button>
 					</div>
 				</header>
 
@@ -223,7 +225,7 @@
 				<!-- 横向流程图 -->
 				<div class="flow-wrap">
 					{#if plan.steps.length === 0}
-						<p class="empty">暂无步骤，在下方添加第一步。</p>
+						<p class="empty">{$t('plans.noSteps')}</p>
 					{:else}
 						<ol class="flow">
 							{#each plan.steps as step, i (step.id)}
@@ -233,7 +235,7 @@
 								<li class="node {step.status}">
 									<button
 										class="node-btn"
-										title="点击切换状态（当前：{STATUS_LABEL[step.status]}）"
+										title="{$t('plans.statusHint', { values: { status: STATUS_LABEL[step.status] } })}"
 										onclick={() => cycleStep(step.id, step.status)}
 									>
 										<span class="node-idx">{i + 1}</span>
@@ -256,14 +258,14 @@
 									<div class="node-tools">
 										<button
 											class="tool"
-											title="编辑步骤"
-											aria-label="编辑步骤"
+											title={$t('plans.editStep')}
+											aria-label={$t('plans.editStep')}
 											onclick={() => startEdit(step.id, step.title)}>✎</button
 										>
 										<button
 											class="tool"
-											title="删除步骤"
-											aria-label="删除步骤"
+											title={$t('plans.deleteStep')}
+											aria-label={$t('plans.deleteStep')}
 											onclick={() => delStep(step.id)}>×</button
 										>
 									</div>
@@ -276,10 +278,10 @@
 				<form class="add-step" onsubmit={(e) => submitStep(e, plan.id)}>
 					<input
 						class="input"
-						placeholder="添加步骤，回车确认"
+						placeholder={$t('plans.addStepPlaceholder')}
 						bind:value={stepDraft[plan.id]}
 					/>
-					<button type="submit" class="btn-ghost">+ 添加步骤</button>
+					<button type="submit" class="btn-ghost">{$t('plans.addStep')}</button>
 					{#if stepError[plan.id]}<span class="err">{stepError[plan.id]}</span>{/if}
 				</form>
 			</section>
@@ -293,25 +295,25 @@
 	<aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="plan-form-title">
 		<header class="drawer-head">
 			<div>
-				<h2 id="plan-form-title">新建计划</h2>
-				<p class="drawer-sub">一个计划就是一张横向流程图，可随时增删步骤</p>
+				<h2 id="plan-form-title">{$t('plans.newPlanTitle')}</h2>
+				<p class="drawer-sub">{$t('plans.newPlanHint')}</p>
 			</div>
 			<button class="drawer-close" onclick={() => (formOpen = false)} aria-label="关闭">✕</button>
 		</header>
 
 		<form class="drawer-body" onsubmit={submitPlan}>
 			<label class="field">
-				<span class="field-label">计划名 *</span>
-				<input class="input" bind:value={nTitle} placeholder="例如 规划模块上线" />
+				<span class="field-label">{$t('plans.planName')}</span>
+				<input class="input" bind:value={nTitle} placeholder={$t('plans.planNamePlaceholder')} />
 			</label>
 
 			<label class="field">
-				<span class="field-label">目标</span>
-				<input class="input" bind:value={nGoal} placeholder="一句话说明想达成什么" />
+				<span class="field-label">{$t('plans.goal')}</span>
+				<input class="input" bind:value={nGoal} placeholder={$t('plans.goalPlaceholder')} />
 			</label>
 
 			<label class="field">
-				<span class="field-label">初始步骤（一行一个，可留空）</span>
+				<span class="field-label">{$t('plans.initialSteps')}</span>
 				<textarea
 					class="input textarea"
 					rows="5"
@@ -323,9 +325,9 @@
 			{#if formError}<p class="form-error">{formError}</p>{/if}
 
 			<footer class="drawer-foot">
-				<button type="button" class="btn-ghost" onclick={() => (formOpen = false)}>取消</button>
+				<button type="button" class="btn-ghost" onclick={() => (formOpen = false)}>{$t('common.cancel')}</button>
 				<button type="submit" class="btn-primary" disabled={submitting}>
-					{submitting ? '创建中…' : '创建计划'}
+					{submitting ? $t('common.creating') : $t('plans.createPlan')}
 				</button>
 			</footer>
 		</form>
@@ -337,15 +339,15 @@
 	<div class="modal-backdrop" onclick={() => !deleting && (confirmId = null)} role="presentation"
 	></div>
 	<div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="del-modal-title">
-		<h3 id="del-modal-title" class="modal-title">删除计划？</h3>
+		<h3 id="del-modal-title" class="modal-title">{$t('plans.deleteTitle')}</h3>
 		<p class="modal-text">
-			确定删除「<strong>{confirmTarget.title}</strong>」？其 {confirmTarget.stepTotal} 个步骤会一并删除，且不可恢复。
+			{$t('plans.deleteBody', { values: { name: confirmTarget.title, count: confirmTarget.stepTotal } })}
 		</p>
 		{#if deleteError}<p class="form-error">{deleteError}</p>{/if}
 		<div class="modal-actions">
-			<button class="btn-ghost" onclick={() => (confirmId = null)} disabled={deleting}>取消</button>
+			<button class="btn-ghost" onclick={() => (confirmId = null)} disabled={deleting}>{$t('common.cancel')}</button>
 			<button class="btn-danger on" onclick={() => doDelete(confirmTarget.id)} disabled={deleting}>
-				{deleting ? '删除中…' : '确认删除'}
+				{deleting ? $t('common.deleting') : $t('projects.confirmDelete')}
 			</button>
 		</div>
 	</div>

@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/api/client';
 	import { login } from '$lib/stores/workspace.svelte';
+	import { t } from '$lib/i18n';
 
 	let uid = $state('');
 	let pwd = $state('');
@@ -21,7 +22,7 @@
 
 		const id = uid.trim();
 		if (!id) {
-			error = '请输入用户 ID';
+			error = $t('login.uidRequired');
 			return;
 		}
 		if (!pwd) {
@@ -64,9 +65,9 @@
 				</div>
 			</div>
 
-			<h1>Red 系一体化工作台</h1>
+			<h1>{$t('login.brandTitle')}</h1>
 			<p class="brand-desc">
-				项目、任务、动态与团队协作收拢在一个工作台里，所有数据保存在本地。
+				{$t('login.brandDesc')}
 			</p>
 
 			<ul class="feature">
@@ -75,20 +76,20 @@
 						<path d="M21 8l-9-5-9 5v8l9 5 9-5V8z" />
 						<path d="M3 8l9 5 9-5M12 13v8" />
 					</svg>
-					项目面板与任务看板
+					{$t('login.feature1')}
 				</li>
 				<li>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<circle cx="12" cy="12" r="9" />
 						<path d="M8 12.5l2.5 2.5L16 9.5" />
 					</svg>
-					待办筛选与优先级管理
+					{$t('login.feature2')}
 				</li>
 				<li>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-5 4V6a2 2 0 0 1 3-2z" />
 					</svg>
-					动态发布与 @ 协作
+					{$t('login.feature3')}
 				</li>
 			</ul>
 
@@ -100,11 +101,11 @@
 			<form class="form" onsubmit={submit}>
 				<header class="form-head">
 					<h2>登录</h2>
-					<p>使用工作区账号继续</p>
+					<p>{$t('login.useWorkspaceAccount')}</p>
 				</header>
 
 				<label class="field">
-					<span class="field-label">用户 ID</span>
+					<span class="field-label">{$t('login.uid')}</span>
 					<div class="input-wrap">
 						<svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<circle cx="12" cy="8" r="4" />
@@ -115,7 +116,7 @@
 							type="text"
 							inputmode="numeric"
 							autocomplete="username"
-							placeholder="八位用户 ID"
+							placeholder={$t('login.uidExample')}
 							bind:value={uid}
 						/>
 					</div>
@@ -139,10 +140,10 @@
 							class="pwd-toggle"
 							type="button"
 							onclick={() => (showPwd = !showPwd)}
-							aria-label={showPwd ? '隐藏密码' : '显示密码'}
-							title={showPwd ? '隐藏密码' : '显示密码'}
+							aria-label={showPwd ? $t('login.hidePassword') : $t('login.showPassword')}
+							title={showPwd ? $t('login.hidePassword') : $t('login.showPassword')}
 						>
-							{showPwd ? '隐藏' : '显示'}
+							{showPwd ? $t('login.hide') : $t('login.show')}
 						</button>
 					</div>
 				</label>
@@ -153,7 +154,7 @@
 						<span class="check-box" aria-hidden="true"></span>
 						记住我
 					</label>
-					<button class="link" type="button" onclick={fillDemo}>使用演示账号</button>
+					<button class="link" type="button" onclick={fillDemo}>{$t('login.useDemo')}</button>
 				</div>
 
 				{#if error}
@@ -170,7 +171,7 @@
 				</button>
 
 				<p class="demo-hint">
-					演示账号 <b>{DEMO_UID}</b> / <b>{DEMO_PWD}</b> · 其余成员 10248572–10248576
+					{$t('login.demoHint')} <b>{DEMO_UID}</b> / <b>{DEMO_PWD}</b> · {$t('login.demoRest')} 10248572–10248576
 				</p>
 			</form>
 		</div>
