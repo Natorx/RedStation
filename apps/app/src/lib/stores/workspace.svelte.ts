@@ -5,6 +5,7 @@
  *
  * 用户、会话、成员、项目、任务、动态均已对接后端
  * （接口封装见 src/lib/api/client.ts，本文件只做状态与缓存）。
+ * 团队（团队页）由 loadTeams / teamActions 走 /api/teams/*。
  * 仅「消息」模块仍是前端 mock，待后端对应模块就绪后按同样方式替换。
  *
  * 状态暴露方式：Svelte 5 不允许从模块顶层导出 $derived，
@@ -20,16 +21,23 @@ import {
 	plansApi,
 	projectsApi,
 	setToken,
+	teamsApi,
 	todosApi,
 	usersApi
 } from '$lib/api/client';
 import type {
 	ApiActivity,
+	ApiHostingStatus,
+	ApiHostingUpload,
 	ApiPlan,
 	ApiStepStatus,
 	ApiMember,
+	ApiJoinRequest,
 	ApiProject,
 	ApiTaskCategory,
+	ApiTeam,
+	ApiTeamMember,
+	ApiTeamRole,
 	ApiTodo,
 	ApiUser,
 	UpdateProfilePayload
@@ -58,8 +66,14 @@ export type NewProjectInput = {
 	stack: string[];
 	frameworks: string[];
 	deployed: boolean;
+	/** 项目在服务器上的部署路径 */
+	deployPath: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔 */
 	runPort: string;
+	/** 项目线上地址 */
+	projectUrl: string;
+	/** 代码仓库地址 */
+	repoUrl: string;
 	/** 项目发起人名字 */
 	owner: string;
 };
@@ -82,8 +96,14 @@ export type ProjectItem = {
 	frameworks: string[];
 	/** 是否服务器部署 */
 	deployed: boolean;
+	/** 项目在服务器上的部署路径 */
+	deployPath: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔 */
 	runPort: string;
+	/** 项目线上地址 */
+	projectUrl: string;
+	/** 代码仓库地址 */
+	repoUrl: string;
 	/** 项目发起人名字 */
 	owner: string;
 };
@@ -145,6 +165,35 @@ export async function login(uid: string, password: string): Promise<void> {
 	session.me = user;
 	session.loggedIn = true;
 	session.loading = false;
+}
+
+/**
+ * 发送注册验证码。
+ * 返回冷却秒数，页面据此起倒计时；不在这里做倒计时，UI 状态归页面管。
+ */
+export async function sendRegisterCode(email: string): Promise<{ cooldown: number }> {
+	const res = await authApi.sendEmailCode(email.trim());
+	return { cooldown: res.cooldown };
+}
+
+/**
+ * 邮箱注册并直接登录。
+ *
+ * 后端注册成功就返回 token，这里跟 login() 一样写入本地并填充 session，
+ * 用户注册完直接进工作台，不用再手动登录一次。
+ */
+export async function registerByEmail(
+	email: string,
+	password: string,
+	code: string
+): Promise<{ name: string; uid: string }> {
+	const res = await authApi.register({ email: email.trim().toLowerCase(), code: code.trim(), password });
+	setToken(res.token);
+	// 注册返回体只有 name/uid，完整的用户资料（权限、头像色等）要再拉一次
+	session.me = await authApi.me();
+	session.loggedIn = true;
+	session.loading = false;
+	return { name: res.name, uid: res.uid };
 }
 
 /**
@@ -428,7 +477,10 @@ export async function addProject(input: NewProjectInput): Promise<ApiProject> {
 		stack: input.stack,
 		frameworks: input.frameworks,
 		deployed: input.deployed,
-		runPort: input.runPort
+		deployPath: input.deployPath,
+		runPort: input.runPort,
+		projectUrl: input.projectUrl,
+		repoUrl: input.repoUrl
 	});
 	workspace.projects = [...workspace.projects, created];
 	return created;
@@ -446,7 +498,10 @@ export async function updateProject(originalId: number, input: NewProjectInput):
 		stack: input.stack,
 		frameworks: input.frameworks,
 		deployed: input.deployed,
-		runPort: input.runPort
+		deployPath: input.deployPath,
+		runPort: input.runPort,
+		projectUrl: input.projectUrl,
+		repoUrl: input.repoUrl
 	});
 	workspace.projects = workspace.projects.map((p) => (p.id === originalId ? updated : p));
 	return updated;
@@ -613,4 +668,254 @@ export async function updatePlanStep(
 /** 删除步骤 */
 export async function removePlanStep(stepId: number): Promise<void> {
 	replacePlan(await plansApi.removeStep(stepId));
+}
+
+// ===== 团队（/api/teams/*）=====
+//
+// 团队成员页的两种形态都由这里驱动：
+// - teams 为空 → 页面展示「创建团队 / 凭团队 ID 加入」
+// - teams 非空 → 展示团队卡片、成员列表，队长额外展示待审核申请
+
+export type TeamState = {
+	/** 我已加入的团队 */
+	teams: ApiTeam[];
+	/** 我发出的、尚未被处理的申请 */
+	myRequests: ApiJoinRequest[];
+	/** 当前选中团队的成员 */
+	members: ApiTeamMember[];
+	/** 当前选中团队的入队申请（仅队长可见） */
+	requests: ApiJoinRequest[];
+	/** 已处理的历史申请（仅队长可见） */
+	handledRequests: ApiJoinRequest[];
+	/** 正在加载 */
+	loading: boolean;
+	/** 最近一次加载失败的原因，null 表示无错误 */
+	error: string | null;
+};
+
+/** 团队状态容器；用对象包住可变字段以便导出常量引用 */
+export const teamState = $state<TeamState>({
+	teams: [],
+	myRequests: [],
+	members: [],
+	requests: [],
+	handledRequests: [],
+	loading: false,
+	error: null
+});
+
+/** 我已加入的团队 */
+export function TEAMS(): ApiTeam[] {
+	return teamState.teams;
+}
+
+/** 我发出的待处理申请 */
+export function MY_JOIN_REQUESTS(): ApiJoinRequest[] {
+	return teamState.myRequests;
+}
+
+/** 当前选中团队的成员 */
+export function TEAM_MEMBERS(): ApiTeamMember[] {
+	return teamState.members;
+}
+
+/** 当前选中团队的待审核申请 */
+export function TEAM_REQUESTS(): ApiJoinRequest[] {
+	return teamState.requests;
+}
+
+/** 当前选中团队已处理的申请 */
+export function TEAM_HANDLED_REQUESTS(): ApiJoinRequest[] {
+	return teamState.handledRequests;
+}
+
+/** 我在某团队里的身份；不在队内返回 null */
+export function myRoleIn(teamId: number): ApiTeamRole | null {
+	return teamState.teams.find((t) => t.id === teamId)?.myRole ?? null;
+}
+
+/** 我能否看到该团队的申请列表（只有队长可以） */
+export function isTeamOwner(teamId: number): boolean {
+	return myRoleIn(teamId) === 'owner';
+}
+
+/**
+ * 拉取「我的团队」。
+ * 同时刷新当前选中团队的成员 / 申请，保证审核后计数与列表一致。
+ *
+ * 页面挂载与根布局的会话恢复可能并发触发同一次加载，用同一个 promise 去重：
+ * 否则后一次请求返回空结果会把前一次的成员 / 申请覆盖掉。
+ */
+let teamsInFlight: Promise<void> | null = null;
+
+export async function loadTeams(): Promise<void> {
+	if (teamsInFlight) return teamsInFlight;
+
+	teamsInFlight = (async () => {
+		teamState.loading = true;
+		try {
+			const res = await teamsApi.my();
+			teamState.teams = res.teams;
+			teamState.myRequests = res.myRequests;
+			teamState.error = null;
+
+			const first = res.teams[0];
+			// 把角色直接传下去：loadTeamDetail 里再调 isTeamOwner 会读到刚写入的
+			// teamState.teams，在 $state 代理上有读到旧值的时序风险
+			if (first) await loadTeamDetail(first.id, first.myRole === 'owner');
+			else {
+				teamState.members = [];
+				teamState.requests = [];
+				teamState.handledRequests = [];
+			}
+		} catch (err) {
+			teamState.error = err instanceof ApiError ? err.message : '团队信息加载失败';
+		} finally {
+			teamState.loading = false;
+			teamsInFlight = null;
+		}
+	})();
+
+	return teamsInFlight;
+}
+
+/**
+ * 拉取某个团队的成员与（队长可见的）申请列表。
+ *
+ * asOwner 省略时按当前状态里的身份判断；从 loadTeams 调用时显式传入，
+ * 避免依赖刚写入的 teamState.teams。
+ */
+export async function loadTeamDetail(teamId: number, asOwner?: boolean): Promise<void> {
+	try {
+		const owner = asOwner ?? isTeamOwner(teamId);
+		const [members, requests] = await Promise.all([
+			teamsApi.members(teamId),
+			// 普通成员拿不到申请列表，失败就留空，不打断页面
+			owner
+				? teamsApi.requests(teamId).catch(() => ({ teamId, items: [], handled: [] }))
+				: Promise.resolve({ teamId, items: [], handled: [] })
+		]);
+		teamState.members = members.items;
+		teamState.requests = requests.items;
+		teamState.handledRequests = requests.handled;
+	} catch (err) {
+		teamState.members = [];
+		teamState.requests = [];
+		teamState.handledRequests = [];
+		teamState.error = err instanceof ApiError ? err.message : '团队成员加载失败';
+	}
+}
+
+/** 创建团队；成功后重新拉取我的团队（新团队会被选中） */
+export async function createTeam(name: string, description: string): Promise<ApiTeam> {
+	const team = await teamsApi.create({ name: name.trim(), description: description.trim() });
+	await loadTeams();
+	return team;
+}
+
+/** 凭八位数团队 ID 申请加入；成功后刷新我发出的申请 */
+export async function requestJoinTeam(joinCode: string, message: string): Promise<ApiJoinRequest> {
+	const res = await teamsApi.join(joinCode.replace(/\s/g, ''), message.trim());
+	await loadTeams();
+	return res.request;
+}
+
+/** 队长审核：批准则申请人入队，两处计数都会刷新 */
+export async function reviewJoinRequest(
+	teamId: number,
+	requestId: number,
+	action: 'approve' | 'reject'
+): Promise<void> {
+	await teamsApi.review(teamId, requestId, action);
+	await Promise.all([loadTeams(), loadMembers()]);
+}
+
+/** 撤回自己尚未被处理的申请 */
+export async function cancelJoinRequest(teamId: number, requestId: number): Promise<void> {
+	await teamsApi.cancelRequest(teamId, requestId);
+	await loadTeams();
+}
+
+/** 退出团队 */
+export async function leaveTeam(teamId: number): Promise<void> {
+	await teamsApi.leave(teamId);
+	await loadTeams();
+}
+
+/** 解散团队（仅队长） */
+export async function dissolveTeam(teamId: number): Promise<void> {
+	await teamsApi.remove(teamId);
+	await loadTeams();
+}
+
+// ===== 代码托管 =====
+
+/**
+ * 目录选择器。
+ * 浏览器没有"选文件夹并拿到文件"的通用 API：Chromium 系用 webkitdirectory，
+ * 拿到的每个 File 都带 webkitRelativePath（形如 myproj/src/a.ts）。
+ */
+type DirectoryInput = HTMLInputElement & { webkitdirectory?: boolean };
+
+/**
+ * 把用户选中的文件夹打包成 zip。
+ * 忽略 node_modules/.git 等目录：与服务端解包时的忽略表保持一致，
+ * 避免把依赖打进去白等半天（也避免超出上传上限）。
+ */
+const HOSTING_IGNORE_DIRS = new Set([
+	'node_modules',
+	'.git',
+	'.svn',
+	'.hg',
+	'dist',
+	'build',
+	'.next',
+	'.nuxt',
+	'target',
+	'__pycache__',
+	'.venv',
+	'venv'
+]);
+
+function shouldIgnorePath(relPath: string): boolean {
+	return relPath
+		.split('/')
+		.slice(0, -1)
+		.some((seg) => HOSTING_IGNORE_DIRS.has(seg));
+}
+
+/** 读取托管状态；未托管返回空态而非抛错 */
+export async function loadHostingStatus(projectId: number): Promise<ApiHostingStatus> {
+	return projectsApi.hostingStatus(projectId);
+}
+
+/**
+ * 上传一整个文件夹到服务器托管。
+ *
+ * packer 由调用方注入（页面里用 fflate），这里只负责：
+ * 过滤忽略目录 -> 打包 -> 去掉文件名前缀 -> POST。
+ */
+export async function uploadProjectFolder(
+	projectId: number,
+	files: { path: string; data: Uint8Array }[]
+): Promise<ApiHostingUpload> {
+	const kept = files.filter((f) => !shouldIgnorePath(f.path));
+	if (kept.length === 0) throw new ApiError('所选文件夹里没有可上传的文件', 0);
+
+	// 去掉最外层文件夹名，让服务器上看到的是项目根目录本身
+	const entries: Record<string, Uint8Array> = {};
+	for (const f of kept) {
+		const rel = f.path.replace(/^[^/]+\//, '');
+		if (rel) entries[rel] = f.data;
+	}
+	if (Object.keys(entries).length === 0) throw new ApiError('所选文件夹里没有可上传的文件', 0);
+
+	const { zipSync } = await import('fflate');
+	const zipped = zipSync(entries, { level: 6 });
+	return projectsApi.hostingUpload(projectId, zipped.buffer as ArrayBuffer);
+}
+
+/** 托管代码下载地址，交给浏览器直接打开 */
+export function hostingDownloadUrl(projectId: number): string {
+	return projectsApi.hostingDownloadUrl(projectId);
 }

@@ -191,7 +191,10 @@
 			<span class="eyebrow">{$t('overview.eyebrow')}</span>
 			<h1>{$t('overview.heroTitle')} ✦</h1>
 			<p class="lead">
-				{$t('overview.heroLead', { values: { running: runningCount, proj: projTaskOpen, done: doneCount } })}
+				<!-- 拆成文字片段翻译，保留 <b> 标签结构（翻译串里的 HTML 会被转义） -->
+				{$t('overview.lead1')}<b>{runningCount}</b>{$t('overview.lead2')}<b>{projTaskOpen}</b>{$t(
+					'overview.lead3'
+				)}<b>{doneCount}</b>{$t('overview.lead4')}
 			</p>
 			<div class="hero-actions">
 				<a class="btn btn-primary" href="/tasks">{$t('overview.viewToday')}</a>

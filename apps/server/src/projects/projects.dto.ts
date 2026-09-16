@@ -37,8 +37,14 @@ export type CreateProjectDto = {
 	stack?: string[];
 	frameworks?: string[];
 	deployed?: boolean;
+	/** 项目在服务器上的部署路径，如 /home/teabos/redlind-apis */
+	deployPath?: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔 */
 	runPort?: string;
+	/** 项目线上地址（http/https） */
+	projectUrl?: string;
+	/** 代码仓库地址（http/https） */
+	repoUrl?: string;
 	/** 发起人名字；不传时取当前登录用户 */
 	owner?: string;
 };
@@ -54,8 +60,14 @@ export type UpdateProjectDto = {
 	stack?: string[];
 	frameworks?: string[];
 	deployed?: boolean;
+	/** 项目在服务器上的部署路径，传空串表示清空 */
+	deployPath?: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔 */
 	runPort?: string;
+	/** 项目线上地址（http/https） */
+	projectUrl?: string;
+	/** 代码仓库地址（http/https） */
+	repoUrl?: string;
 	/** 发起人名字；传空串表示不修改（新建时由后端填当前用户） */
 	owner?: string;
 };
@@ -105,10 +117,16 @@ export type ProjectView = {
 	stack: string[];
 	frameworks: string[];
 	deployed: boolean;
+	/** 项目在服务器上的部署路径；未填为空串 */
+	deployPath: string;
 	/** 项目发起人名字；未记录时为空串 */
 	owner: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔，未填为空串 */
 	runPort: string;
+	/** 项目线上地址；未填为空串 */
+	projectUrl: string;
+	/** 代码仓库地址；未填为空串 */
+	repoUrl: string;
 	tasks: ProjectTaskView[];
 	/** 任务总数与已完成数，供列表页统计，免去前端遍历 */
 	taskTotal: number;

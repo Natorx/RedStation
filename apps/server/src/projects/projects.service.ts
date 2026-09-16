@@ -3,11 +3,13 @@ import {
 	ConflictException,
 	Inject,
 	Injectable,
-	NotFoundException
+	NotFoundException,
+	Optional
 } from '@nestjs/common';
 import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import { DB, type Database } from '../db/database.module';
+import { HostingService } from '../hosting/hosting.service';
 import {
 	projectTasks,
 	projects,
@@ -57,7 +59,12 @@ function humanDate(d: Date): string {
 
 @Injectable()
 export class ProjectsService {
-	constructor(@Inject(DB) private readonly db: Database) {}
+	constructor(
+		@Inject(DB) private readonly db: Database,
+		// 可选注入：删除项目时顺带清理磁盘上的托管目录。
+		// @Optional 让本服务在缺少 HostingModule 的场景（单测等）仍能实例化。
+		@Optional() private readonly hosting?: HostingService
+	) {}
 
 	// ===== 项目查询 =====
 
@@ -128,7 +135,10 @@ export class ProjectsService {
 			stack: toCsv(dto.stack),
 			frameworks: toCsv(dto.frameworks),
 			deployed: dto.deployed ?? false,
+			deployPath: dto.deployPath?.trim() ?? '',
 			runPort: dto.runPort?.trim() ?? '',
+			projectUrl: this.normalizeUrl(dto.projectUrl, '项目地址'),
+			repoUrl: this.normalizeUrl(dto.repoUrl, '代码仓库地址'),
 			owner: dto.owner?.trim() ?? '',
 			unread: false
 		};
@@ -155,7 +165,10 @@ export class ProjectsService {
 		if (dto.stack !== undefined) patch.stack = toCsv(dto.stack);
 		if (dto.frameworks !== undefined) patch.frameworks = toCsv(dto.frameworks);
 		if (dto.deployed !== undefined) patch.deployed = dto.deployed;
+		if (dto.deployPath !== undefined) patch.deployPath = dto.deployPath.trim();
 		if (dto.runPort !== undefined) patch.runPort = dto.runPort.trim();
+		if (dto.projectUrl !== undefined) patch.projectUrl = this.normalizeUrl(dto.projectUrl, '项目地址');
+		if (dto.repoUrl !== undefined) patch.repoUrl = this.normalizeUrl(dto.repoUrl, '代码仓库地址');
 		if (dto.owner !== undefined && dto.owner.trim()) patch.owner = dto.owner.trim();
 
 		const [row] = await this.db.update(projects).set(patch).where(eq(projects.id, id)).returning();
@@ -164,9 +177,11 @@ export class ProjectsService {
 	}
 
 	async remove(id: number): Promise<{ id: number; deleted: true }> {
-		await this.requireRow(id);
-		// project_tasks 已配 onDelete cascade，会一并删除
+		const row = await this.requireRow(id);
+		// project_tasks / project_hostings 已配 onDelete cascade，会一并删除；
+		// 托管目录在磁盘上，删库不会带走，交给 HostingService 清理
 		await this.db.delete(projects).where(eq(projects.id, id));
+		await this.hosting?.purge(id, row.label);
 		return { id, deleted: true };
 	}
 
@@ -332,6 +347,33 @@ export class ProjectsService {
 		return label;
 	}
 
+	/**
+	 * 规范化项目地址 / 仓库地址。
+	 *
+	 * 空串表示「未填写」，直接放行。非空时必须是 http/https 绝对地址：
+	 * 前端会把这两个值渲染成 <a href>，若放任 javascript: 这类协议进来，
+	 * 点一下就能执行脚本，所以协议白名单必须放在服务端。
+	 * 顺手补全裸域名（github.com/x/y -> https://github.com/x/y），省得用户被格式卡住。
+	 */
+	private normalizeUrl(raw: string | undefined, field: string): string {
+		const v = (raw ?? '').trim();
+		if (!v) return '';
+		if (v.length > 255) throw new BadRequestException(`${field}不能超过 255 字`);
+
+		const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v) ? v : `https://${v}`;
+
+		let parsed: URL;
+		try {
+			parsed = new URL(withScheme);
+		} catch {
+			throw new BadRequestException(`${field}格式不正确`);
+		}
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+			throw new BadRequestException(`${field}必须以 http:// 或 https:// 开头`);
+		}
+		return parsed.href;
+	}
+
 	private normalizeColor(raw?: string): string {
 		const color = (raw ?? '').trim() || 'red';
 		if (!(COLOR_OPTIONS as readonly string[]).includes(color)) {
@@ -386,8 +428,11 @@ export class ProjectsService {
 			stack: toList(row.stack),
 			frameworks: toList(row.frameworks),
 			deployed: row.deployed,
+			deployPath: row.deployPath,
 			owner: row.owner,
 			runPort: row.runPort,
+			projectUrl: row.projectUrl,
+			repoUrl: row.repoUrl,
 			tasks,
 			taskTotal: tasks.length,
 			taskDone: tasks.filter((t) => t.done).length,

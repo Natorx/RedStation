@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "deploy_path" varchar(255) DEFAULT '' NOT NULL;

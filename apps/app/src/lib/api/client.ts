@@ -185,6 +185,30 @@ export const authApi = {
 	},
 
 	/**
+	 * 发送注册验证码到邮箱。
+	 * 返回有效期与冷却秒数，前端据此起倒计时，不自己写死 60 秒。
+	 */
+	sendEmailCode(email: string) {
+		return request<{ sent: boolean; expiresIn: number; cooldown: number }>('/api/auth/email-code', {
+			method: 'POST',
+			body: { email },
+			skipAuth: true
+		});
+	},
+
+	/**
+	 * 邮箱注册。
+	 * 成功后后端直接返回 token，调用方写入本地即可，不需要再走一次登录。
+	 */
+	register(payload: { email: string; code: string } & Record<string, string>) {
+		return request<{ token: string; name: string; uid: string }>('/api/auth/register', {
+			method: 'POST',
+			body: payload,
+			skipAuth: true
+		});
+	},
+
+	/**
 	 * 修改自己的资料。
 	 * 走 PATCH /api/users/me —— 后端从 JWT 解析身份，前端不需要也不能传 id。
 	 */
@@ -277,8 +301,14 @@ export type ApiProject = {
 	stack: string[];
 	frameworks: string[];
 	deployed: boolean;
+	/** 项目在服务器上的部署路径；未填为空串 */
+	deployPath: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔，未填为空串 */
 	runPort: string;
+	/** 项目线上地址；未填为空串 */
+	projectUrl: string;
+	/** 代码仓库地址；未填为空串 */
+	repoUrl: string;
 	/** 项目发起人名字；未记录时为空串 */
 	owner: string;
 	tasks: ApiProjectTask[];
@@ -286,6 +316,38 @@ export type ApiProject = {
 	taskDone: number;
 	createdAt: string;
 	updatedAt: string;
+};
+
+/** 托管状态（对齐后端 HostingStatus） */
+export type ApiHostingStatus = {
+	/** 是否托管过 */
+	hosted: boolean;
+	/** 首次上传时间；未托管为 null */
+	firstUploadedAt: string | null;
+	/** 上次上传时间；未托管为 null */
+	lastUploadedAt: string | null;
+	/** 上次上传者显示名；未托管为空串 */
+	lastUploader: string;
+	/** 累计上传次数 */
+	uploadCount: number;
+	/** 当前托管的文件数 */
+	fileCount: number;
+	/** 当前托管的字节数 */
+	totalBytes: number;
+	/** 服务器上的托管目录绝对路径；未托管为空串 */
+	rootPath: string;
+};
+
+/** 一次上传的结果回执 */
+export type ApiHostingUpload = {
+	projectId: number;
+	fileCount: number;
+	totalBytes: number;
+	uploadedAt: string;
+	/** 覆盖前是否已有旧版本 */
+	replaced: boolean;
+	/** 上传后的最新状态 */
+	status: ApiHostingStatus;
 };
 
 export type ProjectPayload = {
@@ -298,8 +360,14 @@ export type ProjectPayload = {
 	stack?: string[];
 	frameworks?: string[];
 	deployed?: boolean;
+	/** 项目在服务器上的部署路径，如 /home/teabos/redlind-apis */
+	deployPath?: string;
 	/** 运行端口，如 "3010"；多个用逗号分隔 */
 	runPort?: string;
+	/** 项目线上地址 */
+	projectUrl?: string;
+	/** 代码仓库地址 */
+	repoUrl?: string;
 };
 export const projectsApi = {
 	list(query: { q?: string; tag?: string; unread?: boolean; limit?: number; offset?: number } = {}) {
@@ -359,6 +427,46 @@ export const projectsApi = {
 		return request<{ id: number; deleted: boolean }>(`/api/projects/tasks/${taskId}`, {
 			method: 'DELETE'
 		});
+	},
+
+	// ===== 代码托管 =====
+
+	/** 托管状态：是否托管过、上次上传时间与上传者、文件数/体积 */
+	hostingStatus(projectId: number) {
+		return request<ApiHostingStatus>(`/api/projects/${projectId}/hosting`);
+	},
+
+	/**
+	 * 上传项目压缩包（zip 原文）。
+	 * 走裸 fetch 而不是 request()：request() 会把 body JSON 序列化。
+	 */
+	async hostingUpload(projectId: number, zip: ArrayBuffer): Promise<ApiHostingUpload> {
+		const token = getToken();
+		const res = await fetch(`${API_BASE}/api/projects/${projectId}/hosting`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/octet-stream',
+				...(token ? { Authorization: `Bearer ${token}` } : {})
+			},
+			body: zip
+		});
+		const text = await res.text();
+		const data = text ? safeParse(text) : null;
+		if (!res.ok) {
+			const message =
+				data && typeof data === 'object' && 'message' in data && typeof data.message === 'string'
+					? data.message
+					: `上传失败（${res.status}）`;
+			throw new ApiError(message, res.status);
+		}
+		return data as ApiHostingUpload;
+	},
+
+	/** 托管代码下载地址（浏览器直接点击下载，带 token 走 query） */
+	hostingDownloadUrl(projectId: number): string {
+		const token = getToken();
+		const base = `${API_BASE}/api/projects/${projectId}/hosting/download`;
+		return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 	}
 };
 
@@ -547,5 +655,120 @@ export const plansApi = {
 
 	removeStep(stepId: number) {
 		return request<ApiPlan>(`/api/plans/steps/${stepId}`, { method: 'DELETE' });
+	}
+};
+
+// ===== 团队模块 =====
+
+/** 团队内身份：队长 / 成员 */
+export type ApiTeamRole = 'owner' | 'member';
+
+/** 入队申请状态 */
+export type ApiJoinStatus = 'pending' | 'approved' | 'rejected';
+
+export type ApiTeam = {
+	id: number;
+	name: string;
+	/** 八位数团队 ID；仅成员可见，非成员为空串 */
+	joinCode: string;
+	description: string;
+	ownerId: number | null;
+	ownerName: string;
+	memberCount: number;
+	/** 待审核申请数，仅队长非零 */
+	pendingCount: number;
+	/** 当前用户在该团队的身份；非成员为 null */
+	myRole: ApiTeamRole | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ApiTeamMember = {
+	userId: number;
+	uid: string;
+	name: string;
+	initials: string | null;
+	role: string;
+	title: string | null;
+	color: string;
+	teamRole: ApiTeamRole;
+	joinedAt: string;
+};
+
+export type ApiJoinRequest = {
+	id: number;
+	teamId: number;
+	userId: number;
+	uid: string;
+	name: string;
+	initials: string | null;
+	color: string;
+	userRole: string;
+	message: string;
+	status: ApiJoinStatus;
+	createdAt: string;
+	handledBy: string;
+	handledAt: string | null;
+};
+
+export const teamsApi = {
+	/** 我所在的团队 + 我发出的待处理申请 */
+	my() {
+		return request<{ teams: ApiTeam[]; myRequests: ApiJoinRequest[] }>('/api/teams/my');
+	},
+
+	/** 创建团队，创建者自动成为队长 */
+	create(payload: { name: string; description?: string }) {
+		return request<ApiTeam>('/api/teams', { method: 'POST', body: payload });
+	},
+
+	/**
+	 * 凭八位数团队 ID 申请加入。
+	 * 这是申请不是直接入队 —— 要等队长审核通过才成为成员。
+	 */
+	join(joinCode: string, message?: string) {
+		return request<{ request: ApiJoinRequest; team: ApiTeam }>('/api/teams/join', {
+			method: 'POST',
+			body: { joinCode, message }
+		});
+	},
+
+	members(teamId: number) {
+		return request<{ teamId: number; items: ApiTeamMember[] }>(`/api/teams/${teamId}/members`);
+	},
+
+	/** 入队申请列表；仅队长可调，其他人会拿到 403 */
+	requests(teamId: number) {
+		return request<{ teamId: number; items: ApiJoinRequest[]; handled: ApiJoinRequest[] }>(
+			`/api/teams/${teamId}/requests`
+		);
+	},
+
+	/** 审核申请：action 为 approve 批准 / reject 拒绝 */
+	review(teamId: number, requestId: number, action: 'approve' | 'reject') {
+		return request<ApiJoinRequest>(`/api/teams/${teamId}/requests/${requestId}/review`, {
+			method: 'POST',
+			body: { action }
+		});
+	},
+
+	/** 撤回自己尚未被处理的申请 */
+	cancelRequest(teamId: number, requestId: number) {
+		return request<{ id: number; deleted: boolean }>(
+			`/api/teams/${teamId}/requests/${requestId}`,
+			{ method: 'DELETE' }
+		);
+	},
+
+	/** 退出团队（队长需先解散） */
+	leave(teamId: number) {
+		return request<{ teamId: number; left: boolean }>(`/api/teams/${teamId}/leave`, {
+			method: 'DELETE'
+		});
+	},
+
+	/** 解散团队；仅队长 */
+	remove(teamId: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/teams/${teamId}`, { method: 'DELETE' });
 	}
 };

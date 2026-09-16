@@ -9,12 +9,22 @@
 		updateProjectTask,
 		removeProject,
 		markProjectRead,
+		loadHostingStatus,
+		uploadProjectFolder,
+		hostingDownloadUrl,
 		STACK_OPTIONS,
 		UI_OPTIONS,
 		COLOR_OPTIONS,
 		type ProjectUI
 	} from '$lib/stores/workspace.svelte';
-	import { ApiError, TASK_CATEGORIES, type ApiProject, type ApiProjectTask, type ApiTaskCategory } from '$lib/api/client';
+	import {
+		ApiError,
+		TASK_CATEGORIES,
+		type ApiHostingStatus,
+		type ApiProject,
+		type ApiProjectTask,
+		type ApiTaskCategory
+	} from '$lib/api/client';
 	import { t } from '$lib/i18n';
 
 	/** 任务类别 -> i18n 键：存储值仍是中文，仅展示层翻译 */
@@ -30,6 +40,147 @@
 	/** 项目列表（后端数据） */
 	const projects = $derived(PROJECTS());
 
+
+	/**
+	 * 从完整 URL 取主机名用于链接文案。
+	 * 详情卡片宽度有限，贴完整地址会换行挤乱 meta 网格；
+	 * 解析失败就退回原文，不至于把链接吞掉。
+	 */
+	function hostOf(url: string): string {
+		try {
+			return new URL(url).host;
+		} catch {
+			return url;
+		}
+	}
+
+	// ===== 代码托管 =====
+
+	/** 当前打开项目的托管状态；null 表示还没查到 */
+	let hosting = $state<ApiHostingStatus | null>(null);
+	/** 状态请求是否在途，避免重复拉取 */
+	let hostingLoading = $state(false);
+	/** 上传阶段：idle 空闲 / packing 打包中 / uploading 上传中 */
+	let hostingPhase = $state<'idle' | 'packing' | 'uploading'>('idle');
+	/** 上传结果或错误的一句话提示 */
+	let hostingMsg = $state('');
+	let hostingOk = $state(true);
+	/** 文件夹选择框 */
+	let folderInput = $state<HTMLInputElement | null>(null);
+	/** 已加载状态的项目 id，切换项目时判断是否需要重新拉取 */
+	let hostingFor = $state<number | null>(null);
+
+	/** 字节数转可读体积 */
+	function humanSize(bytes: number): string {
+		if (!bytes) return '0 B';
+		const units = ['B', 'KB', 'MB', 'GB'];
+		let v = bytes;
+		let i = 0;
+		while (v >= 1024 && i < units.length - 1) {
+			v /= 1024;
+			i += 1;
+		}
+		return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+	}
+
+	/** ISO 时间 -> 相对时间文案 */
+	function humanAgo(iso: string): string {
+		const then = new Date(iso).getTime();
+		if (Number.isNaN(then)) return iso;
+		const min = Math.floor((Date.now() - then) / 60000);
+		if (min < 1) return $t('projects.hostingJustNow');
+		if (min < 60) return $t('projects.hostingMinutesAgo', { values: { n: min } });
+		const hour = Math.floor(min / 60);
+		if (hour < 24) return $t('projects.hostingHoursAgo', { values: { n: hour } });
+		const day = Math.floor(hour / 24);
+		if (day === 1) return $t('projects.hostingYesterday');
+		return $t('projects.hostingDaysAgo', { values: { n: day } });
+	}
+
+	/** 详情卡右侧那句话：已托管显示上次上传时间，否则提示未托管 */
+	const hostingText = $derived.by(() => {
+		if (!hosting?.hosted || !hosting.lastUploadedAt) return $t('projects.hostingNever');
+		const when = humanAgo(hosting.lastUploadedAt);
+		return hosting.lastUploader
+			? $t('projects.hostingLastBy', { values: { time: when, who: hosting.lastUploader } })
+			: $t('projects.hostingLast', { values: { time: when } });
+	});
+
+	const hostingBusy = $derived(hostingPhase !== 'idle');
+
+	/** 拉取托管状态；失败静默（详情卡退回「未托管代码」提示） */
+	async function refreshHosting(projectId: number) {
+		if (hostingFor === projectId && hosting) return;
+		hostingLoading = true;
+		try {
+			hosting = await loadHostingStatus(projectId);
+			hostingFor = projectId;
+		} catch {
+			hosting = null;
+			hostingFor = null;
+		} finally {
+			hostingLoading = false;
+		}
+	}
+
+	/** 把选中的文件夹读成 { path, data } 列表 */
+	async function readFolder(files: FileList): Promise<{ path: string; data: Uint8Array }[]> {
+		const out: { path: string; data: Uint8Array }[] = [];
+		for (const file of Array.from(files)) {
+			const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+			out.push({ path: rel, data: new Uint8Array(await file.arrayBuffer()) });
+		}
+		return out;
+	}
+
+	/** 点击「上传代码」：打开文件夹选择框 */
+	function pickFolder(projectId: number) {
+		hostingFor = projectId;
+		hostingMsg = '';
+		// 复用同一个 input：每次点击先清空 value，否则选同一个文件夹不会触发 change
+		if (folderInput) folderInput.value = '';
+		folderInput?.click();
+	}
+
+	/** 选择文件夹后：打包 + 上传 */
+	async function onFolderPicked(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const projectId = hostingFor;
+		const files = input.files;
+		if (!projectId || !files || files.length === 0) return;
+
+		hostingPhase = 'packing';
+		hostingMsg = $t('projects.hostingPicking');
+		hostingOk = true;
+		try {
+			const list = await readFolder(files);
+			hostingPhase = 'uploading';
+			hostingMsg = $t('projects.hostingUploading');
+			const result = await uploadProjectFolder(projectId, list);
+			hosting = result.status;
+			hostingFor = projectId;
+			hostingOk = true;
+			hostingMsg = $t(result.replaced ? 'projects.hostingReplaced' : 'projects.hostingUploaded', {
+				values: { files: result.fileCount, size: humanSize(result.totalBytes) }
+			});
+		} catch (err) {
+			hostingOk = false;
+			hostingMsg = err instanceof ApiError ? err.message : $t('common.failed');
+		} finally {
+			hostingPhase = 'idle';
+			input.value = '';
+		}
+	}
+
+	/**
+	 * 下载托管代码。
+	 * 用 location.assign 直接走浏览器下载：比 window.open 新标签更可靠
+	 * （弹窗拦截器不会拦同页跳转，下载流也不会留一个空白页）。
+	 */
+	function downloadHosting(projectId: number) {
+		window.location.assign(hostingDownloadUrl(projectId));
+	}
+
 	// 当前选中的项目
 	// 用 id 定位：改名后仍能正确跟随，也不会与其它项目混淆
 	let activeId = $state<number | null>(null);
@@ -43,6 +194,51 @@
 	/** 当前项目：优先用选中的 id，未选中时回落到第一个 */
 	const active = $derived(projects.find((p) => p.id === activeId) ?? projects[0] ?? null);
 
+	// ===== 任务筛选（二级：先按完成状态，再按时间）=====
+	/** 一级：完成状态 */
+	let taskFilterDone = $state<'all' | 'open' | 'done'>('all');
+	/** 二级：时间范围 */
+	let taskFilterTime = $state<'all' | '7d' | '30d' | 'today'>('all');
+
+	/** 相对今天的起始时间戳，null 表示不限 */
+	const taskTimeFrom = $derived.by(() => {
+		const DAY = 24 * 60 * 60 * 1000;
+		const now = Date.now();
+		if (taskFilterTime === 'today') {
+			const d = new Date();
+			d.setHours(0, 0, 0, 0);
+			return d.getTime();
+		}
+		if (taskFilterTime === '7d') return now - 7 * DAY;
+		if (taskFilterTime === '30d') return now - 30 * DAY;
+		return null;
+	});
+
+	/**
+	 * 套用两级筛选后的任务列表。
+	 *
+	 * 时间是「距今 N 天内」的滑动窗口，而不是自然日切分——
+	 * 任务只有 createdAt 时间戳，用滑动窗口不必处理时区与跨天边界。
+	 */
+	function filterTasks(list: ApiProjectTask[]): ApiProjectTask[] {
+		return list.filter((t) => {
+			if (taskFilterDone === 'open' && t.done) return false;
+			if (taskFilterDone === 'done' && !t.done) return false;
+			if (taskTimeFrom !== null && new Date(t.createdAt).getTime() < taskTimeFrom) return false;
+			return true;
+		});
+	}
+
+	const activeTasks = $derived(active ? filterTasks(active.tasks) : []);
+	const taskFiltered = $derived(
+		taskFilterDone !== 'all' || taskFilterTime !== 'all'
+	);
+
+	function clearTaskFilters() {
+		taskFilterDone = 'all';
+		taskFilterTime = 'all';
+	}
+
 	const totalTasks = $derived(projects.reduce((n, p) => n + p.tasks.length, 0));
 	const doneTasks = $derived(
 		projects.reduce((n, p) => n + p.tasks.filter((t) => t.done).length, 0)
@@ -52,6 +248,8 @@
 		// 打开即清除未读角标（同步到后端）
 		markProjectRead(p.id);
 		activeId = p.id;
+		// 详情抽屉已展开时跟随切换到新选中的项目，避免右侧仍停留旧项目
+		if (detailOpen) openDetail(p);
 	}
 
 	function submitTask(e: SubmitEvent) {
@@ -134,6 +332,12 @@
 	let fFramework = $state('');
 	let fFrameworks = $state<string[]>([]);
 	let fDeployed = $state(false);
+	/** 项目在服务器上的部署路径 */
+	let fDeployPath = $state('');
+	/** 项目线上地址 */
+	let fProjectUrl = $state('');
+	/** 代码仓库地址 */
+	let fRepoUrl = $state('');
 	// 运行端口，如 3010；多个用逗号分隔
 	let fRunPort = $state('');
 	let fColor = $state('red');
@@ -148,7 +352,10 @@
 		fFramework = '';
 		fFrameworks = [];
 		fDeployed = false;
+		fDeployPath = '';
 		fRunPort = '';
+		fProjectUrl = '';
+		fRepoUrl = '';
 		fColor = 'red';
 		formError = '';
 	}
@@ -170,7 +377,10 @@
 		fFramework = '';
 		fFrameworks = [...p.frameworks];
 		fDeployed = p.deployed;
+		fDeployPath = p.deployPath ?? '';
 		fRunPort = p.runPort ?? '';
+		fProjectUrl = p.projectUrl ?? '';
+		fRepoUrl = p.repoUrl ?? '';
 		fColor = p.color;
 		formError = '';
 		editingId = p.id;
@@ -235,7 +445,10 @@
 			stack: fStack,
 			frameworks,
 			deployed: fDeployed,
+			deployPath: fDeployPath.trim(),
 			runPort: fRunPort.trim(),
+			projectUrl: fProjectUrl.trim(),
+			repoUrl: fRepoUrl.trim(),
 			// 编辑时沿用原发起人；新建时留空，由后端记为当前登录用户
 			owner: editingId !== null ? (PROJECTS().find((p) => p.id === editingId)?.owner ?? '') : ''
 		};
@@ -266,10 +479,13 @@
 	const detail = $derived(projects.find((p) => p.id === detailId) ?? null);
 
 	function openDetail(p: ApiProject) {
+		// 切换目标项目时取消正在进行的关闭动画，否则延迟回调会把刚打开的抽屉关掉
+		closingDetail = false;
 		// 打开详情即清除未读角标（同步后端）
 		markProjectRead(p.id);
+		// 顺带刷新代码托管状态（上次上传时间要在详情里显示）
+		void refreshHosting(p.id);
 		detailId = p.id;
-		closingDetail = false;
 		detailOpen = true;
 	}
 
@@ -314,7 +530,10 @@
 	function closeDetail() {
 		if (!detailOpen || closingDetail) return;
 		closingDetail = true;
+		// 关闭动画期间若又打开了别的项目（openDetail 会重置 closingDetail），
+		// 这里的延迟回调必须放弃，不能把新打开的抽屉一起关掉
 		setTimeout(() => {
+			if (!closingDetail) return;
 			closingDetail = false;
 			detailOpen = false;
 			detailId = null;
@@ -385,9 +604,13 @@
 					<span class="board-tag {active.color}">{active.tag}</span>
 					<h2>{active.label}</h2>
 					<p class="main-sub">
-						{active.tasks.length > 0
-							? $t('projects.taskFooter', { values: { total: active.tasks.length, done: active.tasks.filter((x) => x.done).length } })
-							: $t('projects.noTasks')}
+						{#if active.tasks.length === 0}
+							{$t('projects.noTasks')}
+						{:else if taskFiltered}
+							{$t('projects.taskFiltered', { values: { shown: activeTasks.length, total: active.tasks.length } })}
+						{:else}
+							{$t('projects.taskFooter', { values: { total: active.tasks.length, done: active.tasks.filter((x) => x.done).length } })}
+						{/if}
 					</p>
 				</div>
 				<button class="link-btn" onclick={() => (detailOpen ? closeDetail() : openDetail(active))}>
@@ -417,9 +640,75 @@
 				<button class="btn btn-primary" type="submit">{$t('projects.addTask')}</button>
 			</form>
 
+			<!-- 任务筛选：一级完成状态，二级时间范围 -->
 			{#if active.tasks.length > 0}
+				<div class="task-filters">
+					<div class="fgroup">
+						<span class="flabel">{$t('projects.filterStatus')}</span>
+						<div class="seg">
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterDone === 'all'}
+								onclick={() => (taskFilterDone = 'all')}>{$t('common.all')}</button
+							>
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterDone === 'open'}
+								onclick={() => (taskFilterDone = 'open')}>{$t('tasks.inProgress')}</button
+							>
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterDone === 'done'}
+								onclick={() => (taskFilterDone = 'done')}>{$t('tasks.done')}</button
+							>
+						</div>
+					</div>
+
+					<div class="fgroup">
+						<span class="flabel">{$t('projects.filterTime')}</span>
+						<div class="seg">
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterTime === 'all'}
+								onclick={() => (taskFilterTime = 'all')}>{$t('common.all')}</button
+							>
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterTime === 'today'}
+								onclick={() => (taskFilterTime = 'today')}>{$t('tasks.today')}</button
+							>
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterTime === '7d'}
+								onclick={() => (taskFilterTime = '7d')}>{$t('projects.last7d')}</button
+							>
+							<button
+								type="button"
+								class="seg-btn"
+								class:on={taskFilterTime === '30d'}
+								onclick={() => (taskFilterTime = '30d')}>{$t('projects.last30d')}</button
+							>
+						</div>
+					</div>
+
+					{#if taskFiltered}
+						<button type="button" class="clear-filters" onclick={clearTaskFilters}>
+							{$t('tasks.clearFilters')}
+						</button>
+					{/if}
+				</div>
+
+				{#if activeTasks.length === 0}
+					<p class="empty">{$t('projects.noTaskMatch')}</p>
+				{:else}
 				<ul class="todo-list">
-					{#each active.tasks as task (task.id)}
+					{#each activeTasks as task (task.id)}
 						<li class="todo-item {task.done ? 'done' : ''}">
 							<label class="todo-check">
 								<input
@@ -501,6 +790,7 @@
 						</li>
 					{/each}
 				</ul>
+				{/if}
 			{:else}
 				<p class="empty-tip">{$t('projects.noTasks')}</p>
 			{/if}
@@ -538,8 +828,32 @@
 					<span class="meta-v" class:yes={detail.deployed}>{detail.deployed ? 'Yes' : 'No'}</span>
 				</div>
 				<div class="meta">
+					<span class="meta-k">{$t('projects.deployPath')}</span>
+					<span class="meta-v" class:yes={!!detail.deployPath}>{detail.deployPath || '—'}</span>
+				</div>
+				<div class="meta">
 					<span class="meta-k">{$t('projects.runPort')}</span>
 					<span class="meta-v" class:yes={!!detail.runPort}>{detail.runPort || '—'}</span>
+				</div>
+				<div class="meta">
+					<span class="meta-k">{$t('projects.projectUrl')}</span>
+					{#if detail.projectUrl}
+						<a class="meta-link" href={detail.projectUrl} target="_blank" rel="noopener noreferrer">
+							{hostOf(detail.projectUrl)}
+						</a>
+					{:else}
+						<span class="meta-v">—</span>
+					{/if}
+				</div>
+				<div class="meta">
+					<span class="meta-k">{$t('projects.repoUrl')}</span>
+					{#if detail.repoUrl}
+						<a class="meta-link" href={detail.repoUrl} target="_blank" rel="noopener noreferrer">
+							{hostOf(detail.repoUrl)}
+						</a>
+					{:else}
+						<span class="meta-v">—</span>
+					{/if}
 				</div>
 				<div class="meta">
 					<span class="meta-k">{$t('projects.owner')}</span>
@@ -552,6 +866,48 @@
 					>
 				</div>
 			</div>
+
+			<!-- 代码托管：左侧上传/下载按钮，右侧上次上传时间或「未托管代码」 -->
+			<div class="host-row">
+				<div class="host-acts">
+					<button
+						type="button"
+						class="btn-edit host-btn"
+						disabled={hostingBusy}
+						onclick={() => pickFolder(detail.id)}
+					>
+						{hostingPhase === 'idle' ? $t('projects.hostingUpload') : hostingMsg}
+					</button>
+					<button
+						type="button"
+						class="btn-edit host-btn"
+						disabled={hostingBusy || !hosting?.hosted}
+						onclick={() => downloadHosting(detail.id)}
+					>
+						{$t('projects.hostingDownload')}
+					</button>
+				</div>
+				<p class="host-hint" class:never={!hosting?.hosted}>
+					{#if hostingPhase === 'idle'}
+						{hostingText}
+					{:else}
+						{hostingMsg}
+					{/if}
+				</p>
+			</div>
+			{#if hostingPhase === 'idle' && hostingMsg && hostingOk}
+				<p class="host-note ok">{hostingMsg}</p>
+			{/if}
+			{#if hostingPhase === 'idle' && hostingMsg && !hostingOk}
+				<p class="host-note err">{hostingMsg}</p>
+			{/if}
+			{#if hosting?.hosted}
+				<p class="host-meta">
+					{$t('projects.hostingSummary', {
+						values: { files: hosting.fileCount, size: humanSize(hosting.totalBytes) }
+					})}
+				</p>
+			{/if}
 
 			<div class="field">
 				<span class="field-label">{$t('projects.purpose')}</span>
@@ -692,23 +1048,55 @@
 				</label>
 				<label class="field">
 					<span class="field-label">{$t('projects.tagColor')}</span>
-					<select class="input select" bind:value={fColor}>
+					<select class="input select color-select" bind:value={fColor}>
 						{#each COLOR_OPTIONS as c}
-							<option value={c}>{$t(CAT_KEY[c])}</option>
+							<option value={c}>{$t(`projects.color.${c}`)}</option>
 						{/each}
 					</select>
 				</label>
 			</div>
 
-			<label class="field">
-				<span class="field-label">{$t('projects.runPort')}</span>
-				<input
-					class="input"
-					type="text"
-					bind:value={fRunPort}
-					placeholder={$t('projects.portPlaceholder')}
-				/>
-			</label>
+			<div class="grid-2">
+				<label class="field">
+					<span class="field-label">{$t('projects.runPort')}</span>
+					<input
+						class="input"
+						type="text"
+						bind:value={fRunPort}
+						placeholder={$t('projects.portPlaceholder')}
+					/>
+				</label>
+				<label class="field">
+					<span class="field-label">{$t('projects.deployPath')}</span>
+					<input
+						class="input"
+						type="text"
+						bind:value={fDeployPath}
+						placeholder={$t('projects.deployPathPlaceholder')}
+					/>
+				</label>
+			</div>
+
+			<div class="grid-2">
+				<label class="field">
+					<span class="field-label">{$t('projects.projectUrl')}</span>
+					<input
+						class="input"
+						type="url"
+						bind:value={fProjectUrl}
+						placeholder={$t('projects.urlPlaceholder')}
+					/>
+				</label>
+				<label class="field">
+					<span class="field-label">{$t('projects.repoUrl')}</span>
+					<input
+						class="input"
+						type="url"
+						bind:value={fRepoUrl}
+						placeholder={$t('projects.repoPlaceholder')}
+					/>
+				</label>
+			</div>
 
 			{#if formError}
 				<p class="form-error">{formError}</p>
@@ -723,6 +1111,18 @@
 		</form>
 	</aside>
 {/if}
+
+<!-- 代码托管：文件夹选择框（隐藏，点击上传时触发） -->
+<input
+	bind:this={folderInput}
+	class="folder-input"
+	type="file"
+	multiple
+	webkitdirectory
+	onchange={onFolderPicked}
+	tabindex="-1"
+	aria-hidden="true"
+/>
 
 <!-- 删除确认弹窗（屏幕居中） -->
 {#if confirmDeleteId !== null && deleteTarget}
@@ -892,6 +1292,33 @@
 		padding: 2px 9px;
 		border-radius: 20px;
 	}
+	/* 标签配色下拉：左侧色块跟随选中值，选项本身由原生弹层展示颜色名 */
+	.field:has(> .color-select) {
+		position: relative;
+	}
+	.color-select {
+		appearance: none;
+		padding-left: 30px;
+		cursor: pointer;
+		background-image:
+			linear-gradient(var(--tag-dot, #f87171), var(--tag-dot, #f87171)),
+			linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
+			linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+		background-repeat: no-repeat;
+		background-size: 12px 12px, 6px 6px, 6px 6px;
+		background-position: 10px center, calc(100% - 18px) center, calc(100% - 12px) center;
+	}
+	.color-select.red { --tag-dot: #f87171; }
+	.color-select.violet { --tag-dot: #a78bfa; }
+	.color-select.amber { --tag-dot: #fbbf24; }
+	.color-select.green { --tag-dot: #34d399; }
+	.color-select.cyan { --tag-dot: #22d3ee; }
+	.color-select.pink { --tag-dot: #f472b6; }
+	.color-select option {
+		background: var(--surface-2, #1b1b20);
+		color: var(--text-1, #ececf1);
+	}
+
 	.board-tag.violet { background: rgba(139, 92, 246, 0.15); color: #a78bfa; }
 	.board-tag.red { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 	.board-tag.amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
@@ -1502,6 +1929,97 @@
 	.meta-v.yes {
 		color: #34d399;
 	}
+	/* 详情里的外链：用下划线暗示可点，避免与普通文本混淆 */
+	.meta-link {
+		font-size: 0.86rem;
+		font-weight: 600;
+		color: var(--red-500);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		word-break: break-all;
+	}
+	.meta-link:hover {
+		color: var(--red-600, #b91c1c);
+	}
+
+	/* ===== 任务筛选 ===== */
+	.task-filters {
+		display: flex;
+		align-items: flex-end;
+		flex-wrap: wrap;
+		gap: var(--space-4);
+		padding: 10px 0 var(--space-3);
+		margin-bottom: var(--space-3);
+		border-bottom: 1px solid var(--line);
+	}
+	.fgroup {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.flabel {
+		font-size: 0.72rem;
+		font-weight: 600;
+		color: var(--text-2);
+	}
+	.seg {
+		display: flex;
+		gap: 3px;
+		padding: 3px;
+		border: 1px solid var(--line);
+		border-radius: 9px;
+		background: var(--bg-2);
+	}
+	.seg-btn {
+		font-family: inherit;
+		font-size: 0.74rem;
+		font-weight: 600;
+		padding: 4px 10px;
+		border: none;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-1);
+		cursor: pointer;
+		white-space: nowrap;
+		transition: color 0.15s, background 0.15s;
+	}
+	.seg-btn:hover {
+		color: var(--text-0);
+	}
+	.seg-btn.on {
+		color: #fff;
+		background: var(--red-600);
+	}
+	.clear-filters {
+		margin-left: auto;
+		font-family: inherit;
+		font-size: 0.74rem;
+		font-weight: 600;
+		padding: 5px 11px;
+		border: 1px solid var(--line-strong);
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text-2);
+		cursor: pointer;
+	}
+	.clear-filters:hover {
+		color: var(--text-0);
+		border-color: var(--red-500);
+	}
+
+	/* 详情里的外链：用下划线暗示可点，避免与普通文本混淆 */
+	.meta-link {
+		font-size: 0.86rem;
+		font-weight: 600;
+		color: var(--red-500);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		word-break: break-all;
+	}
+	.meta-link:hover {
+		color: var(--red-700, #b91c1c);
+	}
+
 	.detail-text {
 		font-size: 0.88rem;
 		color: var(--text-1);
@@ -1560,6 +2078,65 @@
 	.detail-actions {
 		display: flex;
 		gap: var(--space-2);
+	}
+
+	/* ===== 代码托管 ===== */
+	/* 文件夹选择框只是触发器，藏起来不占位（不能用 display:none，否则部分浏览器不给 click） */
+	.folder-input {
+		position: fixed;
+		left: -9999px;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+	}
+	.host-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		padding: var(--space-3);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-md);
+		background: var(--bg-2);
+	}
+	.host-acts {
+		display: flex;
+		flex: none;
+		gap: var(--space-2);
+	}
+	.host-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.host-btn:disabled:hover {
+		color: var(--text-1);
+		border-color: var(--line-strong);
+	}
+	.host-hint {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--text-1);
+		text-align: right;
+		line-height: 1.4;
+	}
+	.host-hint.never {
+		color: var(--text-2);
+	}
+	.host-note {
+		margin: -6px 0 0;
+		font-size: 0.76rem;
+		line-height: 1.5;
+	}
+	.host-note.ok {
+		color: #34d399;
+	}
+	.host-note.err {
+		color: #f87171;
+	}
+	.host-meta {
+		margin: -8px 0 0;
+		font-size: 0.74rem;
+		color: var(--text-2);
 	}
 	/* 详情卡变窄后，元信息从三列改为两列，避免文字被挤断 */
 	.detail-card .meta-grid {

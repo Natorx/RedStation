@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/api/client';
-	import { login } from '$lib/stores/workspace.svelte';
+	import { login, sendRegisterCode, registerByEmail } from '$lib/stores/workspace.svelte';
 	import { t } from '$lib/i18n';
 
 	let uid = $state('');
@@ -10,6 +10,117 @@
 	let error = $state('');
 	let submitting = $state(false);
 	let showPwd = $state(false);
+
+	// ===== 注册 =====
+	/** 当前标签：login / register */
+	let tab = $state<'login' | 'register'>('login');
+	let rEmail = $state('');
+	let rPwd = $state('');
+	let rPwd2 = $state('');
+	let rCode = $state('');
+	let rError = $state('');
+	let rOk = $state('');
+	let rSubmitting = $state(false);
+	let sendingCode = $state(false);
+	let showRPwd = $state(false);
+	/** 发码冷却倒计时（秒），0 表示可再次发送 */
+	let cooldown = $state(0);
+	let timer: ReturnType<typeof setInterval> | null = null;
+
+	function startCooldown(seconds: number) {
+		cooldown = seconds;
+		if (timer) clearInterval(timer);
+		timer = setInterval(() => {
+			cooldown -= 1;
+			if (cooldown <= 0 && timer) {
+				clearInterval(timer);
+				timer = null;
+				cooldown = 0;
+			}
+		}, 1000);
+	}
+
+	// 组件销毁时清掉计时器，避免切页后仍在跑
+	$effect(() => () => {
+		if (timer) clearInterval(timer);
+	});
+
+	function switchTab(next: 'login' | 'register') {
+		tab = next;
+		error = '';
+		rError = '';
+		rOk = '';
+	}
+
+	/** 发送邮箱验证码 */
+	async function onSendCode() {
+		if (sendingCode || cooldown > 0) return;
+		rError = '';
+		rOk = '';
+		const email = rEmail.trim();
+		if (!email) {
+			rError = $t('register.emailRequired');
+			return;
+		}
+		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+			rError = $t('register.emailInvalid');
+			return;
+		}
+		sendingCode = true;
+		try {
+			const res = await sendRegisterCode(email);
+			startCooldown(res.cooldown);
+			rOk = $t('register.codeSent');
+		} catch (err) {
+			rError = err instanceof ApiError ? err.message : $t('register.sendFailed');
+		} finally {
+			sendingCode = false;
+		}
+	}
+
+	/** 提交注册 */
+	async function submitRegister(e: SubmitEvent) {
+		e.preventDefault();
+		if (rSubmitting) return;
+		rError = '';
+		rOk = '';
+
+		const email = rEmail.trim();
+		if (!email) {
+			rError = $t('register.emailRequired');
+			return;
+		}
+		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+			rError = $t('register.emailInvalid');
+			return;
+		}
+		if (!rPwd) {
+			rError = $t('register.pwdRequired');
+			return;
+		}
+		if (rPwd.length < 6) {
+			rError = $t('register.pwdTooShort');
+			return;
+		}
+		if (rPwd !== rPwd2) {
+			rError = $t('register.pwdMismatch');
+			return;
+		}
+		if (!/^\d{4}$/.test(rCode.trim())) {
+			rError = $t('register.codeRule');
+			return;
+		}
+
+		rSubmitting = true;
+		try {
+			await registerByEmail(email, rPwd, rCode);
+			// 注册即登录，直接进工作台
+			await goto('/');
+		} catch (err) {
+			rError = err instanceof ApiError ? err.message : $t('register.failed');
+			rSubmitting = false;
+		}
+	}
 
 	// 演示账号提示文案（实际校验在后端）
 	const DEMO_UID = '10248571';
@@ -22,7 +133,7 @@
 
 		const id = uid.trim();
 		if (!id) {
-			error = $t('login.uidRequired');
+			error = $t('login.accountRequired');
 			return;
 		}
 		if (!pwd) {
@@ -98,6 +209,27 @@
 
 		<!-- 右：表单 -->
 		<div class="form-side">
+			<!-- 登录 / 注册 切换 -->
+			<div class="tabs" role="tablist" aria-label={$t('login.title')}>
+				<button
+					type="button"
+					class="tab"
+					class:on={tab === 'login'}
+					role="tab"
+					aria-selected={tab === 'login'}
+					onclick={() => switchTab('login')}>{$t('login.tabLogin')}</button
+				>
+				<button
+					type="button"
+					class="tab"
+					class:on={tab === 'register'}
+					role="tab"
+					aria-selected={tab === 'register'}
+					onclick={() => switchTab('register')}>{$t('login.tabRegister')}</button
+				>
+			</div>
+
+			{#if tab === 'login'}
 			<form class="form" onsubmit={submit}>
 				<header class="form-head">
 					<h2>登录</h2>
@@ -105,7 +237,7 @@
 				</header>
 
 				<label class="field">
-					<span class="field-label">{$t('login.uid')}</span>
+					<span class="field-label">{$t('login.account')}</span>
 					<div class="input-wrap">
 						<svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<circle cx="12" cy="8" r="4" />
@@ -114,9 +246,9 @@
 						<input
 							class="input"
 							type="text"
-							inputmode="numeric"
 							autocomplete="username"
-							placeholder={$t('login.uidExample')}
+							spellcheck="false"
+							placeholder={$t('login.accountPlaceholder')}
 							bind:value={uid}
 						/>
 					</div>
@@ -174,6 +306,125 @@
 					{$t('login.demoHint')} <b>{DEMO_UID}</b> / <b>{DEMO_PWD}</b> · {$t('login.demoRest')} 10248572–10248576
 				</p>
 			</form>
+			{:else}
+			<!-- 注册：邮箱 + 密码 + 邮箱验证码 -->
+			<form class="form" onsubmit={submitRegister}>
+				<header class="form-head">
+					<h2>{$t('login.tabRegister')}</h2>
+					<p>{$t('register.subtitle')}</p>
+				</header>
+
+				<label class="field">
+					<span class="field-label">{$t('register.email')}</span>
+					<div class="input-wrap">
+						<svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<rect x="3" y="5" width="18" height="14" rx="2" />
+							<path d="M3 7l9 6 9-6" />
+						</svg>
+						<input
+							class="input"
+							type="email"
+							autocomplete="email"
+							placeholder={$t('register.emailPlaceholder')}
+							bind:value={rEmail}
+						/>
+					</div>
+				</label>
+
+				<label class="field">
+					<span class="field-label">{$t('register.code')}</span>
+					<div class="input-wrap">
+						<svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M4 7l8 6 8-6" />
+							<rect x="3" y="5" width="18" height="14" rx="2" />
+						</svg>
+						<input
+							class="input code-input"
+							type="text"
+							inputmode="numeric"
+							maxlength="4"
+							autocomplete="one-time-code"
+							placeholder={$t('register.codePlaceholder')}
+							bind:value={rCode}
+						/>
+						<button
+							class="code-btn"
+							type="button"
+							disabled={sendingCode || cooldown > 0}
+							onclick={onSendCode}
+						>
+							{#if sendingCode}
+								{$t('register.sending')}
+							{:else if cooldown > 0}
+								{cooldown}s
+							{:else}
+								{$t('register.sendCode')}
+							{/if}
+						</button>
+					</div>
+				</label>
+
+				<label class="field">
+					<span class="field-label">{$t('register.password')}</span>
+					<div class="input-wrap">
+						<svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<rect x="4" y="10" width="16" height="10" rx="2" />
+							<path d="M8 10V7a4 4 0 018 0v3" />
+						</svg>
+						<input
+							class="input"
+							type={showRPwd ? 'text' : 'password'}
+							autocomplete="new-password"
+							placeholder={$t('register.passwordPlaceholder')}
+							bind:value={rPwd}
+						/>
+						<button
+							class="pwd-toggle"
+							type="button"
+							onclick={() => (showRPwd = !showRPwd)}
+							aria-label={showRPwd ? $t('login.hidePassword') : $t('login.showPassword')}
+						>
+							{showRPwd ? $t('login.hide') : $t('login.show')}
+						</button>
+					</div>
+				</label>
+
+				<label class="field">
+					<span class="field-label">{$t('register.password2')}</span>
+					<div class="input-wrap">
+						<svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<rect x="4" y="10" width="16" height="10" rx="2" />
+							<path d="M8 10V7a4 4 0 018 0v3" />
+						</svg>
+						<input
+							class="input"
+							type={showRPwd ? 'text' : 'password'}
+							autocomplete="new-password"
+							placeholder={$t('register.password2Placeholder')}
+							bind:value={rPwd2}
+						/>
+					</div>
+				</label>
+
+				{#if rError}
+					<p class="error" role="alert">{rError}</p>
+				{/if}
+				{#if rOk}
+					<p class="ok" role="status">{rOk}</p>
+				{/if}
+
+				<button class="submit" type="submit" disabled={rSubmitting}>
+					{#if rSubmitting}
+						<span class="spinner" aria-hidden="true"></span>
+						{$t('register.submitting')}
+					{:else}
+						{$t('login.tabRegister')}
+					{/if}
+				</button>
+
+				<p class="demo-hint">{$t('register.hint')}</p>
+			</form>
+			{/if}
 		</div>
 	</section>
 </div>
@@ -443,6 +694,78 @@
 	}
 	.link:hover {
 		color: var(--red-500);
+	}
+
+	/* ===== 登录 / 注册 标签 ===== */
+	.tabs {
+		display: flex;
+		gap: 4px;
+		padding: 4px;
+		margin-bottom: 4px;
+		border: 1px solid var(--line);
+		border-radius: 11px;
+		background: var(--bg-2);
+	}
+	.tab {
+		flex: 1;
+		padding: 8px 0;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text-1);
+		font-family: inherit;
+		font-size: 0.84rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: color 0.15s ease, background 0.15s ease;
+	}
+	.tab:hover {
+		color: var(--text-0);
+	}
+	.tab.on {
+		color: #fff;
+		background: var(--red-600);
+	}
+
+	/* 验证码输入与发送按钮同排 */
+	.code-input {
+		font-family: var(--font-mono);
+		letter-spacing: 0.24em;
+	}
+	.code-btn {
+		position: absolute;
+		right: 6px;
+		top: 50%;
+		transform: translateY(-50%);
+		padding: 6px 12px;
+		border: 1px solid var(--line-strong);
+		border-radius: 8px;
+		background: var(--bg-3);
+		color: var(--text-1);
+		font-family: inherit;
+		font-size: 0.76rem;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.code-btn:hover:not(:disabled) {
+		color: var(--text-0);
+		border-color: var(--red-500);
+	}
+	.code-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	/* 成功提示，与 .error 呼应 */
+	.ok {
+		margin: 0;
+		padding: 8px 10px;
+		border: 1px solid rgba(34, 197, 94, 0.35);
+		border-radius: 9px;
+		background: rgba(34, 197, 94, 0.1);
+		color: #4ade80;
+		font-size: 0.78rem;
 	}
 
 	.error {

@@ -117,8 +117,17 @@ export const projects = pgTable(
 		/** 是否服务器部署 */
 		deployed: boolean('deployed').notNull().default(false),
 
+		/** 项目在服务器上的部署路径，如 /home/teabos/redlind-apis；未填为空串 */
+		deployPath: varchar('deploy_path', { length: 255 }).notNull().default(''),
+
 		/** 运行端口，如 "3010"；多个端口用逗号分隔，未填为空串 */
 		runPort: varchar('run_port', { length: 64 }).notNull().default(''),
+
+		/** 项目线上地址（部署后可访问的 URL）；未填为空串 */
+		projectUrl: varchar('project_url', { length: 255 }).notNull().default(''),
+
+		/** 代码仓库地址（GitHub 等）；未填为空串 */
+		repoUrl: varchar('repo_url', { length: 255 }).notNull().default(''),
 
 		/** 项目发起人名字快照；未登录创建时为空串 */
 		owner: varchar('owner', { length: 64 }).notNull().default(''),
@@ -164,6 +173,51 @@ export const projectTasks = pgTable(
 		index('project_tasks_project_idx').on(t.projectId),
 		index('project_tasks_done_idx').on(t.done)
 	]
+);
+
+// ===== 代码托管 =====
+
+/**
+ * 项目代码托管记录。
+ *
+ * 每个项目至多一条：保存「上次上传」这类展示信息。
+ * 实际文件落在服务器磁盘（HOSTING_ROOT/<项目id>-<slug>/），
+ * 这里只存元数据，不存二进制。
+ */
+export const projectHostings = pgTable(
+	'project_hostings',
+	{
+		id: serial('id').primaryKey(),
+
+		projectId: integer('project_id')
+			.notNull()
+			.references(() => projects.id, { onDelete: 'cascade' }),
+
+		/** 服务器上的托管目录绝对路径，便于排查与展示 */
+		rootPath: varchar('root_path', { length: 512 }).notNull().default(''),
+
+		/** 上次上传者显示名；未登录上传时为空串 */
+		lastUploader: varchar('last_uploader', { length: 64 }).notNull().default(''),
+
+		/** 首次上传时间 */
+		firstUploadedAt: timestamp('first_uploaded_at', { withTimezone: true }),
+
+		/** 上次上传时间，前端据此显示「上次上传 …」 */
+		lastUploadedAt: timestamp('last_uploaded_at', { withTimezone: true }),
+
+		/** 当前托管的文件数（不含目录） */
+		fileCount: integer('file_count').notNull().default(0),
+
+		/** 当前托管的原始字节数 */
+		totalBytes: integer('total_bytes').notNull().default(0),
+
+		/** 累计上传次数，每次覆盖 +1 */
+		uploadCount: integer('upload_count').notNull().default(0),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [uniqueIndex('project_hostings_project_unique').on(t.projectId)]
 );
 
 // ===== 全局待办 =====
@@ -316,10 +370,128 @@ export const planSteps = pgTable(
 	(t) => [index('plan_steps_plan_idx').on(t.planId)]
 );
 
+// ===== 团队 =====
+
+/**
+ * 团队表。
+ *
+ * 取代 users.teams 那个逗号分隔的展示用字段：那边只存名字、表达不了成员关系，
+ * 这里给团队一个稳定的八位数 joinCode，别人凭它申请加入，队长审核后成为成员。
+ *
+ * 除 ownerId 外的成员关系一律看 team_members，不做冗余快照 ——
+ * 退队或解散后不必回头同步旧数据。
+ */
+export const teams = pgTable(
+	'teams',
+	{
+		id: serial('id').primaryKey(),
+
+		/** 团队名，全局唯一 */
+		name: varchar('name', { length: 64 }).notNull(),
+
+		/** 八位数团队 ID，成员凭它申请加入 */
+		joinCode: varchar('join_code', { length: 8 }).notNull(),
+
+		/** 一句话介绍 */
+		description: varchar('description', { length: 255 }).notNull().default(''),
+
+		/** 队长用户 id；队长注销后置空，团队保留 */
+		ownerId: integer('owner_id').references(() => users.id, { onDelete: 'set null' }),
+		/** 队长名字快照，避免用户删除后团队失去归属显示 */
+		ownerName: varchar('owner_name', { length: 64 }).notNull().default(''),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [
+		uniqueIndex('teams_name_unique').on(t.name),
+		uniqueIndex('teams_join_code_unique').on(t.joinCode),
+		index('teams_owner_idx').on(t.ownerId)
+	]
+);
+
+/**
+ * 团队成员关系。
+ * (teamId, userId) 唯一：同一人不会在同一团队里出现两条。
+ */
+export const teamMembers = pgTable(
+	'team_members',
+	{
+		id: serial('id').primaryKey(),
+
+		teamId: integer('team_id')
+			.notNull()
+			.references(() => teams.id, { onDelete: 'cascade' }),
+
+		userId: integer('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+
+		/** 团队身份：owner（队长）/ member（成员） */
+		role: varchar('role', { length: 16 }).notNull().default('member'),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [
+		uniqueIndex('team_members_team_user_unique').on(t.teamId, t.userId),
+		index('team_members_user_idx').on(t.userId)
+	]
+);
+
+/**
+ * 入队申请。提交后为 pending，队长批准 / 拒绝后落成终态。
+ * 同一人对同一团队同时只允许一条 pending（服务层校验，避免重复申请刷屏）。
+ */
+export const teamJoinRequests = pgTable(
+	'team_join_requests',
+	{
+		id: serial('id').primaryKey(),
+
+		teamId: integer('team_id')
+			.notNull()
+			.references(() => teams.id, { onDelete: 'cascade' }),
+
+		userId: integer('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+
+		/** 申请人名字快照，列表展示不必再 join users */
+		userName: varchar('user_name', { length: 64 }).notNull().default(''),
+
+		/** 申请留言 */
+		message: varchar('message', { length: 255 }).notNull().default(''),
+
+		/** pending（待审核）/ approved（已批准）/ rejected（已拒绝） */
+		status: varchar('status', { length: 16 }).notNull().default('pending'),
+
+		/** 审批人名字快照 */
+		handledBy: varchar('handled_by', { length: 64 }).notNull().default(''),
+		handledAt: timestamp('handled_at', { withTimezone: true }),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [
+		index('team_join_requests_team_idx').on(t.teamId),
+		index('team_join_requests_user_idx').on(t.userId),
+		index('team_join_requests_status_idx').on(t.status)
+	]
+);
+
+export type TeamRow = typeof teams.$inferSelect;
+export type NewTeamRow = typeof teams.$inferInsert;
+export type TeamMemberRow = typeof teamMembers.$inferSelect;
+export type NewTeamMemberRow = typeof teamMembers.$inferInsert;
+export type TeamJoinRequestRow = typeof teamJoinRequests.$inferSelect;
+export type NewTeamJoinRequestRow = typeof teamJoinRequests.$inferInsert;
+
 export type ProjectRow = typeof projects.$inferSelect;
 export type NewProjectRow = typeof projects.$inferInsert;
 export type ProjectTaskRow = typeof projectTasks.$inferSelect;
 export type NewProjectTaskRow = typeof projectTasks.$inferInsert;
+export type ProjectHostingRow = typeof projectHostings.$inferSelect;
+export type NewProjectHostingRow = typeof projectHostings.$inferInsert;
 export type TodoRow = typeof todos.$inferSelect;
 export type NewTodoRow = typeof todos.$inferInsert;
 export type ActivityRow = typeof activities.$inferSelect;

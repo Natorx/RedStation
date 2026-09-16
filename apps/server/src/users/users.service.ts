@@ -27,6 +27,10 @@ import * as bcrypt from 'bcrypt';
 const BCRYPT_ROUNDS = 10;
 /** 密码最少长度；前端登录页放开后由后端统一校验 */
 const MIN_PASSWORD_LENGTH = 6;
+/** uid 随机生成的重试上限；撞库概率极低，留足余量即可 */
+const UID_MAX_ATTEMPTS = 30;
+/** 昵称长度上限，与 schema 的 varchar(64) 对齐 */
+const NAME_MAX_LENGTH = 64;
 
 @Injectable()
 export class UsersService {
@@ -180,19 +184,64 @@ export class UsersService {
 
 	// ===== 认证 =====
 
-	/** 校验账号密码，成功返回用户视图；失败统一抛 401，避免暴露账号是否存在 */
+	/**
+	 * 校验账号密码，成功返回用户视图；失败统一抛 401，避免暴露账号是否存在。
+	 *
+	 * 登录标识兼容两种：八位数 uid（管理员建的号），以及邮箱（自助注册的号 ——
+	 * 注册时 uid 与昵称都由系统生成，用户只记得自己的邮箱）。
+	 */
 	async validateCredentials(dto: LoginDto): Promise<UserView> {
-		const uid = (dto?.uid ?? '').trim();
+		const account = (dto?.uid ?? '').trim();
 		const password = dto?.password ?? '';
-		if (!uid || !password) throw new BadRequestException('请填写用户 ID 和密码');
+		if (!account || !password) throw new BadRequestException('请填写账号和密码');
 
-		const row = await this.findRowByUid(uid);
-		if (!row) throw new UnauthorizedException('用户 ID 或密码不正确');
+		const row = await this.findRowByAccount(account);
+		if (!row) throw new UnauthorizedException('账号或密码不正确');
 		if (!row.active) throw new UnauthorizedException('账号已停用，请联系管理员');
 
 		const ok = await bcrypt.compare(password, row.passwordHash);
-		if (!ok) throw new UnauthorizedException('用户 ID 或密码不正确');
+		if (!ok) throw new UnauthorizedException('账号或密码不正确');
 
+		return this.toView(row);
+	}
+
+	/**
+	 * 自助注册建号。
+	 *
+	 * 与管理员的 create() 分开，因为权限边界不同：注册者不能自选
+	 * role / title / active / permissions，这些一律取默认值；
+	 * uid 与 name 也由系统生成，避免自定身份标识。
+	 */
+	async registerByEmail(email: string, password: string): Promise<UserView> {
+		const normalizedEmail = this.normalizeEmail(email);
+		const pwd = this.requirePassword(password);
+
+		await this.assertUnique(null, normalizedEmail);
+
+		const uid = await this.generateUid();
+		const name = await this.generateName(normalizedEmail);
+
+		const values: NewUserRow = {
+			uid,
+			name,
+			email: normalizedEmail,
+			passwordHash: await bcrypt.hash(pwd, BCRYPT_ROUNDS),
+			initials: this.deriveInitials(name),
+			role: '成员',
+			title: null,
+			color: '#dc2626',
+			teams: '',
+			active: true,
+			// 新账号只给基础权限：建项目 / 建任务 / 发动态
+			permProject: true,
+			permTaskAssign: true,
+			permPost: true,
+			permTeamManage: false,
+			permReportExport: false,
+			permSystemSetting: false
+		};
+
+		const [row] = await this.db.insert(users).values(values).returning();
 		return this.toView(row);
 	}
 
@@ -218,6 +267,79 @@ export class UsersService {
 	private async findRowByUid(uid: string): Promise<UserRow | undefined> {
 		const [row] = await this.db.select().from(users).where(eq(users.uid, uid)).limit(1);
 		return row;
+	}
+
+	/**
+	 * 按登录标识查用户：纯数字按 uid 查，含 @ 按邮箱查。
+	 *
+	 * 两种标识在库里都是唯一索引，先判形态再查，避免
+	 * 「用邮箱当 uid 去查」这种永远查不到的无效查询。
+	 */
+	private async findRowByAccount(account: string): Promise<UserRow | undefined> {
+		return account.includes('@')
+			? this.findRowByEmail(account.toLowerCase())
+			: this.findRowByUid(account);
+	}
+
+	private async findRowByEmail(email: string): Promise<UserRow | undefined> {
+		const [row] = await this.db.select().from(users).where(eq(users.email, email)).limit(1);
+		return row;
+	}
+
+	/**
+	 * 邮箱是否已被占用。
+	 *
+	 * 供注册流程在建号前预检，也供「发验证码」这一步提前拦截——
+	 * 后者能少发一封注定失败的邮件。
+	 */
+	async existsByEmail(email: string): Promise<boolean> {
+		const row = await this.findRowByEmail((email ?? '').trim().toLowerCase());
+		return Boolean(row);
+	}
+
+	/**
+	 * 生成八位数登录 ID。
+	 *
+	 * 取值范围锁死在 10000000 ~ 99999999，保证恒为八位（补零写法会丢前导零）。
+	 * 随机数不体现注册顺序，也避免被顺序猜测。
+	 */
+	private async generateUid(): Promise<string> {
+		for (let i = 0; i < UID_MAX_ATTEMPTS; i++) {
+			const uid = String(Math.floor(10000000 + Math.random() * 90000000));
+			const dup = await this.findRowByUid(uid);
+			if (!dup) return uid;
+		}
+		throw new ConflictException('用户 ID 生成失败，请重试');
+	}
+
+	/**
+	 * 由邮箱推导显示昵称：取 @ 前部分并去掉常见分隔符。
+	 *
+	 * 昵称允许重复（只建了索引没建唯一约束），所以重名时追加序号即可，
+	 * 不需要像 uid 那样重试。
+	 */
+	private async generateName(email: string): Promise<string> {
+		const base = email.split('@')[0].replace(/[._-]+/g, ' ').trim() || '新成员';
+		const truncated = base.slice(0, NAME_MAX_LENGTH);
+
+		const [dup] = await this.db
+			.select({ id: users.id })
+			.from(users)
+			.where(eq(users.name, truncated))
+			.limit(1);
+		if (!dup) return truncated;
+
+		// 重名就加序号，最多试到 99，超出则带时间戳后缀兜底
+		for (let i = 2; i <= 99; i++) {
+			const candidate = `${truncated}${i}`.slice(0, NAME_MAX_LENGTH);
+			const [hit] = await this.db
+				.select({ id: users.id })
+				.from(users)
+				.where(eq(users.name, candidate))
+				.limit(1);
+			if (!hit) return candidate;
+		}
+		return `${truncated.slice(0, NAME_MAX_LENGTH - 5)}${Date.now() % 100000}`;
 	}
 
 	/** uid 与 email 唯一性校验；excludeId 用于更新时排除自身 */

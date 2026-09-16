@@ -12,3 +12,6 @@ build/
 
 # TypeScript 增量构建缓存
 *.tsbuildinfo
+
+# 代码托管落盘的业务数据（用户上传的项目代码），不进版本库
+apps/server/storage/
