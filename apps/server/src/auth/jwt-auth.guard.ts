@@ -45,3 +45,36 @@ export class JwtAuthGuard implements CanActivate {
 		return true;
 	}
 }
+
+/**
+ * 「可选登录」守卫：
+ * - 带了 Authorization: Bearer <token> 就解析并挂到 request.user；
+ * - 没带或令牌无效时直接放行（不抛 401）。
+ *
+ * 用于「未登录也能调、登录后行为更强」的接口，例如项目列表
+ * （带 JWT 时按成员收窄可见范围并回 myRole，未登录则返回全量）。
+ */
+@Injectable()
+export class OptionalJwtGuard implements CanActivate {
+	constructor(private readonly jwt: JwtService) {}
+
+	async canActivate(context: ExecutionContext): Promise<boolean> {
+		const req = context.switchToHttp().getRequest<AuthedRequest>();
+		const header = req.headers.authorization;
+
+		let raw: string | undefined;
+		if (header?.startsWith('Bearer ')) raw = header.slice('Bearer '.length).trim();
+		if (!raw) raw = tokenFromRawUrl(req.raw?.url);
+		if (!raw) return true;
+
+		try {
+			const payload = await this.jwt.verifyAsync<JwtPayload>(raw);
+			req.user = { id: payload.sub, uid: payload.uid, name: payload.name };
+		} catch {
+			// 令牌无效视为匿名访问，不阻断请求
+			req.user = undefined;
+		}
+
+		return true;
+	}
+}

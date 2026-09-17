@@ -1,8 +1,8 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 
 import { DB, type Database } from '../db/database.module';
-import { todos, type NewTodoRow, type TodoRow } from '../db/schema';
+import { todos, users, type NewTodoRow, type TodoRow } from '../db/schema';
 import {
 	TODO_DEFAULT_LIMIT,
 	TODO_MAX_LIMIT,
@@ -58,7 +58,24 @@ export class TodosService {
 			this.db.select({ count: sql<number>`count(*)::int` }).from(todos).where(where)
 		]);
 
-		return { total: counted[0]?.count ?? 0, items: rows.map((r) => this.toView(r)) };
+		// 发布者名字以 users 表当前值为准：author_name 是发布时的快照，用户改名后要按 id 取新名
+		const authorIds = [
+			...new Set(rows.map((r) => r.authorId).filter((v): v is number => v !== null))
+		];
+		const authorRows = authorIds.length
+			? await this.db
+					.select({ id: users.id, name: users.name })
+					.from(users)
+					.where(inArray(users.id, authorIds))
+			: [];
+		const authorMap = new Map(authorRows.map((a) => [a.id, a.name]));
+
+		return {
+			total: counted[0]?.count ?? 0,
+			items: rows.map((r) =>
+				this.toView(r, r.authorId === null ? undefined : authorMap.get(r.authorId))
+			)
+		};
 	}
 
 	/** 统计：总数 / 未完成 / 已完成 / 未完成且高优先级 */
@@ -81,7 +98,8 @@ export class TodosService {
 	}
 
 	async findById(id: number): Promise<TodoView> {
-		return this.toView(await this.requireRow(id));
+		const row = await this.requireRow(id);
+		return this.toView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	// ===== 写入 =====
@@ -105,7 +123,7 @@ export class TodosService {
 		};
 
 		const [row] = await this.db.insert(todos).values(values).returning();
-		return this.toView(row);
+		return this.toView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	/** 局部更新；只有显式传入的字段才会被写入 */
@@ -121,7 +139,7 @@ export class TodosService {
 		if (dto.dueAt !== undefined) patch.dueAt = this.parseDueAt(dto.dueAt);
 
 		const [row] = await this.db.update(todos).set(patch).where(eq(todos.id, id)).returning();
-		return this.toView(row);
+		return this.toView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	/** 切换完成状态，返回更新后的对象 */
@@ -132,7 +150,7 @@ export class TodosService {
 			.set({ done: !current.done, updatedAt: new Date() })
 			.where(eq(todos.id, id))
 			.returning();
-		return this.toView(row);
+		return this.toView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	/** 删除待办 */
@@ -190,8 +208,19 @@ export class TodosService {
 		return date;
 	}
 
+	/** 单个用户改名后的实时名字；无作者或用户已删除时返回 undefined，回退到快照 */
+	private async liveAuthorName(authorId: number | null): Promise<string | undefined> {
+		if (authorId === null) return undefined;
+		const [row] = await this.db
+			.select({ name: users.name })
+			.from(users)
+			.where(eq(users.id, authorId))
+			.limit(1);
+		return row?.name;
+	}
+
 	/** 行 -> 前端视图；createdAt 转为毫秒时间戳，dueAt/updatedAt 转为 ISO 字符串 */
-	private toView(row: TodoRow): TodoView {
+	private toView(row: TodoRow, liveAuthorName?: string): TodoView {
 		return {
 			id: row.id,
 			text: row.text,
@@ -199,7 +228,7 @@ export class TodosService {
 			type: row.type,
 			priority: row.priority,
 			dueAt: row.dueAt ? row.dueAt.toISOString() : null,
-			author: row.authorName,
+			author: liveAuthorName || row.authorName,
 			createdAt: row.createdAt.getTime(),
 			updatedAt: row.updatedAt.toISOString()
 		};

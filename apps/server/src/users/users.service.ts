@@ -6,10 +6,10 @@ import {
 	NotFoundException,
 	UnauthorizedException
 } from '@nestjs/common';
-import { and, asc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import { DB, type Database } from '../db/database.module';
-import { users, type NewUserRow, type UserRow } from '../db/schema';
+import { teamMembers, users, type NewUserRow, type UserRow } from '../db/schema';
 import {
 	PERMISSION_KEYS,
 	PERMISSION_META,
@@ -83,6 +83,39 @@ export class UsersService {
 			.from(users)
 			.where(eq(users.active, true))
 			.orderBy(asc(users.id));
+		return rows;
+	}
+
+	/**
+	 * 与当前用户处于同一团队的全部成员（含自己），供项目邀请下拉使用。
+	 *
+	 * 与 listMembers 的区别：那个返回全站启用用户（供 @ 提及等），
+	 * 这个按 team_members 取交集 —— 只能邀请同一个团队里的人。
+	 */
+	async listTeammates(userId: number): Promise<
+		Pick<UserView, 'id' | 'name' | 'role' | 'color'>[]
+	> {
+		// 我所在的团队
+		const mine = await this.db
+			.select({ teamId: teamMembers.teamId })
+			.from(teamMembers)
+			.where(eq(teamMembers.userId, userId));
+		const teamIds = mine.map((m) => m.teamId);
+		if (!teamIds.length) return [];
+
+		// 这些团队里的全部成员去重
+		const rows = await this.db
+			.selectDistinct({
+				id: users.id,
+				name: users.name,
+				role: users.role,
+				color: users.color
+			})
+			.from(teamMembers)
+			.innerJoin(users, eq(users.id, teamMembers.userId))
+			.where(and(inArray(teamMembers.teamId, teamIds), eq(users.active, true)))
+			.orderBy(asc(users.id));
+
 		return rows;
 	}
 

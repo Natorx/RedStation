@@ -1,9 +1,7 @@
 import {
 	Body,
-	CanActivate,
 	Controller,
 	Delete,
-	ExecutionContext,
 	Get,
 	HttpCode,
 	Param,
@@ -13,13 +11,13 @@ import {
 	Query,
 	Req,
 	UseGuards,
-	Injectable
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 
 import { TodosService } from './todos.service';
-import type { AuthedRequest } from '../auth/jwt-auth.guard';
-import type { JwtPayload } from '../auth/auth.service';
+import { OptionalJwtGuard, type AuthedRequest } from '../auth/jwt-auth.guard';
+
+// 兼容旧引用路径：此前该守卫定义在本文件，plans 模块仍从 './todos.controller' 导入
+export { OptionalJwtGuard };
 import type {
 	CreateTodoDto,
 	ListTodosQuery,
@@ -28,36 +26,6 @@ import type {
 	UpdateTodoDto
 } from './todos.dto';
 
-/**
- * 「可选登录」守卫：
- * - 带了 Authorization: Bearer <token> 且令牌合法时，把用户挂到 request.user；
- * - 没带或令牌无效时直接放行（不抛 401）。
- *
- * 用于 POST /api/todos —— 前端暂未全程带 token，但登录后需要记录 authorId。
- */
-@Injectable()
-export class OptionalJwtGuard implements CanActivate {
-	constructor(private readonly jwt: JwtService) {}
-
-	async canActivate(context: ExecutionContext): Promise<boolean> {
-		const req = context.switchToHttp().getRequest<AuthedRequest>();
-		const header = req.headers.authorization;
-		if (!header?.startsWith('Bearer ')) return true;
-
-		const token = header.slice('Bearer '.length).trim();
-		if (!token) return true;
-
-		try {
-			const payload = await this.jwt.verifyAsync<JwtPayload>(token);
-			req.user = { id: payload.sub, uid: payload.uid, name: payload.name };
-		} catch {
-			// 令牌无效视为匿名访问，不影响创建待办
-			req.user = undefined;
-		}
-
-		return true;
-	}
-}
 
 @Controller('todos')
 export class TodosController {

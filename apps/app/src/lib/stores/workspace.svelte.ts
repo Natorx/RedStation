@@ -34,6 +34,7 @@ import type {
 	ApiMember,
 	ApiJoinRequest,
 	ApiProject,
+	ApiProjectInvite,
 	ApiTaskCategory,
 	ApiTeam,
 	ApiTeamMember,
@@ -156,6 +157,34 @@ export function ME(): ApiUser | null {
 /** 团队成员列表（会话中的 members 字段） */
 export function MEMBERS(): ApiMember[] {
 	return session.members;
+}
+
+
+/**
+ * 与我同团队的用户；项目邀请下拉只能从这里选。
+ * 与 members 分开维护：members 供 @ 提及等场景，是全站用户。
+ */
+export const teammateState = $state<{ items: ApiMember[]; loading: boolean }>({
+	items: [],
+	loading: false
+});
+
+/** 与我同团队的用户 */
+export function TEAMMATES(): ApiMember[] {
+	return teammateState.items;
+}
+
+/** 拉取同团队成员；未加入团队时为空数组 */
+export async function loadTeammates(): Promise<void> {
+	teammateState.loading = true;
+	try {
+		teammateState.items = await usersApi.teammates();
+	} catch {
+		// 拉取失败时保持上一次结果，不阻断页面
+		teammateState.items = [];
+	} finally {
+		teammateState.loading = false;
+	}
 }
 
 /** 登录：调后端换 token，并写入当前用户 */
@@ -692,6 +721,82 @@ export type TeamState = {
 	/** 最近一次加载失败的原因，null 表示无错误 */
 	error: string | null;
 };
+
+// ===== 项目邀请 =====
+
+type ProjectInviteState = {
+	/** 我收到的项目邀请（待回应在前） */
+	invites: ApiProjectInvite[];
+	loading: boolean;
+	error: string | null;
+};
+
+/** 项目邀请状态容器 */
+export const projectInviteState = $state<ProjectInviteState>({
+	invites: [],
+	loading: false,
+	error: null
+});
+
+/** 我收到的项目邀请 */
+export function PROJECT_INVITES(): ApiProjectInvite[] {
+	return projectInviteState.invites;
+}
+
+/** 待我回应的项目邀请数量，供导航角标使用 */
+export function PENDING_PROJECT_INVITES(): number {
+	return projectInviteState.invites.filter((i) => i.status === 'pending').length;
+}
+
+/** 拉取我收到的项目邀请 */
+export async function loadProjectInvites(): Promise<void> {
+	projectInviteState.loading = true;
+	try {
+		const res = await projectsApi.myInvites();
+		projectInviteState.invites = res.items;
+		projectInviteState.error = null;
+	} catch (err) {
+		projectInviteState.error = err instanceof ApiError ? err.message : '项目邀请加载失败';
+	} finally {
+		projectInviteState.loading = false;
+	}
+}
+
+/**
+ * 回应项目邀请。
+ * 同意后我成为项目成员，需要刷新项目列表才能看到该项目。
+ */
+export async function reviewProjectInvite(
+	inviteId: number,
+	action: 'accept' | 'reject'
+): Promise<void> {
+	const updated = await projectsApi.reviewInvite(inviteId, action);
+	projectInviteState.invites = projectInviteState.invites.map((i) =>
+		i.id === inviteId ? updated : i
+	);
+	// 同意即入伙，刷新项目列表；拒绝不影响列表
+	if (action === 'accept') await loadProjects();
+}
+
+/** 发起人邀请成员加入项目 */
+export async function inviteProjectMember(
+	projectId: number,
+	payload: { userId?: number; uid?: string; message?: string }
+): Promise<ApiProjectInvite> {
+	return projectsApi.invite(projectId, payload);
+}
+
+/** 发起人撤回邀请 */
+export async function cancelProjectInvite(inviteId: number): Promise<void> {
+	await projectsApi.cancelInvite(inviteId);
+	projectInviteState.invites = projectInviteState.invites.filter((i) => i.id !== inviteId);
+}
+
+/** 发起人移除项目成员 */
+export async function removeProjectMember(projectId: number, userId: number): Promise<void> {
+	await projectsApi.removeMember(projectId, userId);
+	await loadProjects();
+}
 
 /** 团队状态容器；用对象包住可变字段以便导出常量引用 */
 export const teamState = $state<TeamState>({

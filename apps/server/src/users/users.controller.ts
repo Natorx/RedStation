@@ -78,10 +78,20 @@ export class UsersController {
 		return this.users.list(parsed);
 	}
 
-	/** GET /api/users/members — 团队成员精简列表，供 @ 提及与发布者下拉使用 */
+	/** GET /api/users/members — 全站启用用户精简列表，供 @ 提及与发布者下拉使用 */
 	@Get('members')
 	listMembers() {
 		return this.users.listMembers();
+	}
+
+	/**
+	 * GET /api/users/teammates — 与我同团队的用户，供项目邀请下拉使用。
+	 * 未加入任何团队时返回空数组。
+	 */
+	@Get('teammates')
+	@UseGuards(JwtAuthGuard)
+	listTeammates(@Req() req: AuthedRequest) {
+		return this.users.listTeammates(this.currentUserId(req));
 	}
 
 	/** GET /api/users/uid/:uid — 按八位数用户 ID 查询 */

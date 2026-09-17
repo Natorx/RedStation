@@ -5,6 +5,10 @@
 		ME,
 		MEMBERS,
 		PROJECTS,
+		TEAMS,
+		TEAM_MEMBERS,
+		loadTeams,
+		loadTeamDetail,
 		updateProfile,
 		changeMyPassword
 	} from '$lib/stores/workspace.svelte';
@@ -26,7 +30,47 @@
 
 	/** 加入日期：后端返回 ISO 时间戳，取日期部分 */
 	const joinedAt = $derived(ME()?.createdAt ? ME()!.createdAt.slice(0, 10) : '—');
-	const myTeams = $derived(ME()?.teams.join('、') || '暂未加入团队');
+	/** 我已加入的团队（后端真实数据，与团队页共用一份 store） */
+	const teams = $derived(TEAMS());
+	/** 当前选中的团队 id；默认第一个 */
+	let activeTeamId = $state<number | null>(null);
+	const activeTeam = $derived(teams.find((tm) => tm.id === activeTeamId) ?? teams[0] ?? null);
+	/** 当前团队的成员列表 */
+	const teamMembers = $derived(TEAM_MEMBERS());
+
+	// 进入页面即拉取团队数据；只在登录后触发一次，避免读 teamState 造成自触发循环
+	let teamsLoadedFor = $state<number | null>(null);
+	$effect(() => {
+		const me = ME();
+		if (!me) return;
+		if (teamsLoadedFor === me.id) return;
+		teamsLoadedFor = me.id;
+		loadTeams();
+	});
+
+	// 团队列表变化时把选中项收敛到有效值
+	$effect(() => {
+		if (!teams.length) {
+			activeTeamId = null;
+			return;
+		}
+		if (activeTeamId === null || !teams.some((tm) => tm.id === activeTeamId)) {
+			activeTeamId = teams[0].id;
+		}
+	});
+
+	function selectTeam(id: number) {
+		if (activeTeamId === id) return;
+		activeTeamId = id;
+		loadTeamDetail(id);
+	}
+
+	/** 团队卡片副标题：团队数与当前团队成员数 */
+	const myTeamsSub = $derived(
+		teams.length
+			? $t('me.teamsSub', { values: { teams: teams.length, members: teamMembers.length } })
+			: $t('me.teamsEmpty')
+	);
 
 	// ===== 编辑资料抽屉 =====
 	// 可选头像配色，与后端 color 字段（hex）对应
@@ -280,20 +324,43 @@
 			<header class="card-head">
 				<div>
 					<h2>{$t('me.myTeams')}</h2>
-					<p class="sub">{myTeams}</p>
+					<p class="sub">{myTeamsSub}</p>
 				</div>
+				<a class="link" href="/team">{$t('me.manageTeams')} →</a>
 			</header>
-			<ul class="team-list">
-				{#each MEMBERS() as m (m.name)}
-					<li class="team-item" class:me={m.name === ME()?.name}>
-						<span class="team-avatar" style="background:{m.color}">{initialsOf(m.name)}</span>
-						<div class="team-info">
-							<span class="team-name">{m.name}{#if m.name === ME()?.name}<span class="me-badge">{$t('me.meBadge')}</span>{/if}</span>
-							<span class="team-role">{m.role}</span>
-						</div>
-					</li>
-				{/each}
-			</ul>
+			{#if !teams.length}
+				<p class="team-empty">{$t('me.teamsEmptyHint')}</p>
+			{:else}
+				<div class="team-tabs" role="tablist">
+					{#each teams as tm (tm.id)}
+						<button
+							type="button"
+							class="team-tab"
+							class:active={tm.id === activeTeam?.id}
+							role="tab"
+							aria-selected={tm.id === activeTeam?.id}
+							onclick={() => selectTeam(tm.id)}
+						>
+							<span class="team-tab-name">{tm.name}</span>
+							<span class="team-tab-role">{tm.myRole === 'owner' ? $t('team.roleOwner') : $t('team.roleMember')}</span>
+						</button>
+					{/each}
+				</div>
+				<ul class="team-list">
+					{#each teamMembers as m (m.userId)}
+						<li class="team-item" class:me={m.userId === ME()?.id}>
+							<span class="team-avatar" style="background:{m.color}">{initialsOf(m.name)}</span>
+							<div class="team-info">
+								<span class="team-name">{m.name}{#if m.userId === ME()?.id}<span class="me-badge">{$t('me.meBadge')}</span>{/if}</span>
+								<span class="team-role">{m.title || m.role}</span>
+							</div>
+							<span class="team-member-role">{m.teamRole === 'owner' ? $t('team.roleOwner') : $t('team.roleMember')}</span>
+						</li>
+					{:else}
+						<li class="team-item"><span class="team-empty">{$t('team.noMembers')}</span></li>
+					{/each}
+				</ul>
+			{/if}
 		</section>
 	</div>
 
@@ -672,6 +739,46 @@
 	}
 
 	/* ===== 团队 ===== */
+	.team-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-bottom: 12px;
+	}
+
+	.team-tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 12px;
+		border: 1px solid var(--border, rgba(148, 163, 184, 0.28));
+		border-radius: 999px;
+		background: transparent;
+		color: inherit;
+		font-size: 0.82rem;
+		cursor: pointer;
+	}
+
+	.team-tab.active {
+		border-color: var(--red-500);
+		color: var(--red-500);
+	}
+
+	.team-tab-role {
+		font-size: 0.7rem;
+		opacity: 0.65;
+	}
+
+	.team-member-role {
+		margin-left: auto;
+		font-size: 0.72rem;
+		opacity: 0.65;
+	}
+
+	.team-empty {
+		font-size: 0.85rem;
+		opacity: 0.7;
+	}
 	.team-item {
 		display: flex;
 		align-items: center;

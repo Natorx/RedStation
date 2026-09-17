@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 
 import { PlansService } from './plans.service';
-import { OptionalJwtGuard } from '../todos/todos.controller';
+import { OptionalJwtGuard } from '../auth/jwt-auth.guard';
 import type { AuthedRequest } from '../auth/jwt-auth.guard';
 import type {
 	CreatePlanDto,

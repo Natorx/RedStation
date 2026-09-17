@@ -6,6 +6,8 @@
  *   label 仍返回，前端可平滑迁移到 id 定位。
  */
 
+import type { ProjectMemberRole, ProjectMemberView } from './project-members.dto';
+
 /** 项目形态 */
 export const UI_FORMS = ['GUI', 'TUI', 'CLI'] as const;
 export type ProjectUI = (typeof UI_FORMS)[number];
@@ -131,6 +133,12 @@ export type ProjectView = {
 	/** 任务总数与已完成数，供列表页统计，免去前端遍历 */
 	taskTotal: number;
 	taskDone: number;
+	/** 项目成员（发起人在前，其余按加入时间） */
+	members: ProjectMemberView[];
+	/** 成员总数 */
+	memberCount: number;
+	/** 当前登录用户在该项目里的身份；非成员为 null */
+	myRole: ProjectMemberRole | null;
 	createdAt: string;
 	updatedAt: string;
 };

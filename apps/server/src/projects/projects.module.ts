@@ -4,7 +4,8 @@ import { JwtModule } from '@nestjs/jwt';
 
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { ProjectMembersService } from './project-members.service';
+import { JwtAuthGuard, OptionalJwtGuard } from '../auth/jwt-auth.guard';
 
 @Module({
 	// JwtModule 配置与 AuthModule / UsersModule 保持一致，供可选鉴权解析令牌
@@ -18,7 +19,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 		})
 	],
 	controllers: [ProjectsController],
-	providers: [ProjectsService, JwtAuthGuard],
-	exports: [ProjectsService]
+	providers: [ProjectsService, ProjectMembersService, JwtAuthGuard, OptionalJwtGuard],
+	exports: [ProjectsService, ProjectMembersService]
 })
 export class ProjectsModule {}

@@ -4,7 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 
 import { PlansController } from './plans.controller';
 import { PlansService } from './plans.service';
-import { OptionalJwtGuard } from '../todos/todos.controller';
+import { OptionalJwtGuard } from '../auth/jwt-auth.guard';
 
 @Module({
 	// JwtModule 与 AuthModule / TodosModule 中的配置保持一致，供 OptionalJwtGuard 校验令牌

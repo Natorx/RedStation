@@ -138,6 +138,79 @@ export const projects = pgTable(
 	(t) => [uniqueIndex('projects_label_unique').on(t.label), index('projects_tag_idx').on(t.tag)]
 );
 
+// ===== 项目成员 =====
+
+/**
+ * 项目成员关系。
+ * (projectId, userId) 唯一：同一人在同一项目里只出现一条。
+ * role 为 owner（发起人）/ member（成员）；发起人由创建项目时自动写入。
+ */
+export const projectMembers = pgTable(
+	'project_members',
+	{
+		id: serial('id').primaryKey(),
+
+		projectId: integer('project_id')
+			.notNull()
+			.references(() => projects.id, { onDelete: 'cascade' }),
+
+		userId: integer('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+
+		/** 项目身份：owner（发起人）/ member（成员） */
+		role: varchar('role', { length: 16 }).notNull().default('member'),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [
+		uniqueIndex('project_members_project_user_unique').on(t.projectId, t.userId),
+		index('project_members_user_idx').on(t.userId)
+	]
+);
+
+/**
+ * 项目成员邀请。
+ * 发起人发出邀请（pending），被邀请人同意后写入 project_members 并置 approved。
+ * 同一人对同一项目同时只允许一条 pending（服务层校验）。
+ */
+export const projectInvites = pgTable(
+	'project_invites',
+	{
+		id: serial('id').primaryKey(),
+
+		projectId: integer('project_id')
+			.notNull()
+			.references(() => projects.id, { onDelete: 'cascade' }),
+
+		/** 被邀请人 */
+		userId: integer('user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+
+		/** 邀请人（项目发起人）用户 id */
+		inviterId: integer('inviter_id').references(() => users.id, { onDelete: 'set null' }),
+		inviterName: varchar('inviter_name', { length: 64 }).notNull().default(''),
+
+		/** 邀请留言 */
+		message: varchar('message', { length: 255 }).notNull().default(''),
+
+		/** pending（待回应）/ approved（已同意）/ rejected（已拒绝） */
+		status: varchar('status', { length: 16 }).notNull().default('pending'),
+
+		handledAt: timestamp('handled_at', { withTimezone: true }),
+
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(t) => [
+		index('project_invites_project_idx').on(t.projectId),
+		index('project_invites_user_idx').on(t.userId),
+		index('project_invites_status_idx').on(t.status)
+	]
+);
+
 // ===== 项目下的具体任务 =====
 
 /**
@@ -488,6 +561,10 @@ export type NewTeamJoinRequestRow = typeof teamJoinRequests.$inferInsert;
 
 export type ProjectRow = typeof projects.$inferSelect;
 export type NewProjectRow = typeof projects.$inferInsert;
+export type ProjectMemberRow = typeof projectMembers.$inferSelect;
+export type NewProjectMemberRow = typeof projectMembers.$inferInsert;
+export type ProjectInviteRow = typeof projectInvites.$inferSelect;
+export type NewProjectInviteRow = typeof projectInvites.$inferInsert;
 export type ProjectTaskRow = typeof projectTasks.$inferSelect;
 export type NewProjectTaskRow = typeof projectTasks.$inferInsert;
 export type ProjectHostingRow = typeof projectHostings.$inferSelect;

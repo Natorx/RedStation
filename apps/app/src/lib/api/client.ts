@@ -239,9 +239,17 @@ export const usersApi = {
 		return request<ApiUser>(`/api/users/${id}`);
 	},
 
-	/** 团队成员列表，供 @ 提及与发布者下拉使用 */
+	/** 全站启用用户列表，供 @ 提及与发布者下拉使用 */
 	members() {
 		return request<ApiMember[]>('/api/users/members');
+	},
+
+	/**
+	 * 与我同团队的用户，供项目邀请下拉使用。
+	 * 与 members() 的区别：那个是全站用户，这个只回同一团队的人。
+	 */
+	teammates() {
+		return request<ApiMember[]>('/api/users/teammates');
 	},
 
 	list(query: { q?: string; role?: string; active?: boolean; limit?: number; offset?: number } = {}) {
@@ -314,8 +322,50 @@ export type ApiProject = {
 	tasks: ApiProjectTask[];
 	taskTotal: number;
 	taskDone: number;
+	/** 项目成员（发起人在前） */
+	members: ApiProjectMember[];
+	/** 成员总数 */
+	memberCount: number;
+	/** 当前登录用户在该项目里的身份；非成员为 null */
+	myRole: ApiProjectRole | null;
 	createdAt: string;
 	updatedAt: string;
+};
+
+/** 项目内身份：发起人 / 成员 */
+export type ApiProjectRole = 'owner' | 'member';
+
+/** 项目成员 */
+export type ApiProjectMember = {
+	userId: number;
+	uid: string;
+	name: string;
+	initials: string | null;
+	title: string | null;
+	role: string;
+	color: string;
+	projectRole: ApiProjectRole;
+	joinedAt: string;
+};
+
+/** 项目邀请状态 */
+export type ApiProjectInviteStatus = 'pending' | 'approved' | 'rejected';
+
+/** 项目邀请 */
+export type ApiProjectInvite = {
+	id: number;
+	projectId: number;
+	projectLabel: string;
+	userId: number;
+	uid: string;
+	name: string;
+	initials: string | null;
+	color: string;
+	inviterName: string;
+	message: string;
+	status: ApiProjectInviteStatus;
+	createdAt: string;
+	handledAt: string | null;
 };
 
 /** 托管状态（对齐后端 HostingStatus） */
@@ -421,6 +471,56 @@ export const projectsApi = {
 
 	toggleTask(taskId: number) {
 		return request<ApiProjectTask>(`/api/projects/tasks/${taskId}/toggle`, { method: 'PATCH' });
+	},
+
+	// ===== 项目成员与邀请 =====
+
+	/** 项目成员列表（仅项目成员可调） */
+	members(projectId: number) {
+		return request<{ projectId: number; items: ApiProjectMember[]; myRole: ApiProjectRole | null }>(
+			`/api/projects/${projectId}/members`
+		);
+	},
+
+	/** 我收到的项目邀请（待回应在前） */
+	myInvites() {
+		return request<{ items: ApiProjectInvite[] }>('/api/projects/invites/my');
+	},
+
+	/** 发起人邀请成员；userId 与 uid 二选一 */
+	invite(projectId: number, payload: { userId?: number; uid?: string; message?: string }) {
+		return request<ApiProjectInvite>(`/api/projects/${projectId}/invites`, {
+			method: 'POST',
+			body: payload
+		});
+	},
+
+	/** 该项目已发出的邀请（仅发起人） */
+	invites(projectId: number) {
+		return request<{ items: ApiProjectInvite[] }>(`/api/projects/${projectId}/invites`);
+	},
+
+	/** 回应邀请：accept 同意 / reject 拒绝 */
+	reviewInvite(inviteId: number, action: 'accept' | 'reject') {
+		return request<ApiProjectInvite>(`/api/projects/invites/${inviteId}/review`, {
+			method: 'POST',
+			body: { action }
+		});
+	},
+
+	/** 发起人撤回邀请 */
+	cancelInvite(inviteId: number) {
+		return request<{ id: number; deleted: boolean }>(`/api/projects/invites/${inviteId}`, {
+			method: 'DELETE'
+		});
+	},
+
+	/** 发起人移除成员 */
+	removeMember(projectId: number, userId: number) {
+		return request<{ projectId: number; userId: number; removed: boolean }>(
+			`/api/projects/${projectId}/members/${userId}`,
+			{ method: 'DELETE' }
+		);
 	},
 
 	removeTask(taskId: number) {

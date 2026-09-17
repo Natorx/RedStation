@@ -15,6 +15,15 @@
 		STACK_OPTIONS,
 		UI_OPTIONS,
 		COLOR_OPTIONS,
+		PROJECT_INVITES,
+		loadProjectInvites,
+		reviewProjectInvite,
+		inviteProjectMember,
+		cancelProjectInvite,
+		removeProjectMember,
+		ME,
+		TEAMMATES,
+		loadTeammates,
 		type ProjectUI
 	} from '$lib/stores/workspace.svelte';
 	import {
@@ -22,6 +31,7 @@
 		TASK_CATEGORIES,
 		type ApiHostingStatus,
 		type ApiProject,
+		type ApiProjectMember,
 		type ApiProjectTask,
 		type ApiTaskCategory
 	} from '$lib/api/client';
@@ -36,6 +46,91 @@
 		运维: 'taskCategory.运维',
 		设计: 'taskCategory.设计'
 	};
+
+
+// ===== 项目邀请 =====
+	/** 我收到的项目邀请 */
+	const myInvites = $derived(PROJECT_INVITES());
+
+	/** 邀请下拉的候选：只能邀请与我同团队的人，并排除已在项目内的 */
+	const inviteCandidates = $derived(TEAMMATES().filter((m) => !inProjectIds.has(m.id)));
+	const pendingInvites = $derived(myInvites.filter((i) => i.status === 'pending'));
+	/** 邀请处理中，避免重复点击 */
+	let inviteBusy = $state<number | null>(null);
+	let inviteError = $state('');
+
+	/** 回应邀请：同意后我进入该项目成员列表 */
+	async function respondInvite(id: number, action: 'accept' | 'reject') {
+		inviteBusy = id;
+		inviteError = '';
+		try {
+			await reviewProjectInvite(id, action);
+		} catch (err) {
+			inviteError = err instanceof ApiError ? err.message : $t('common.failed');
+		} finally {
+			inviteBusy = null;
+		}
+	}
+
+	// ===== 邀请成员（仅发起人） =====
+	let inviteOpen = $state(false);
+	let inviteTargetId = $state<number | null>(null);
+	let inviteMessage = $state('');
+	let inviteSending = $state(false);
+	let inviteFormError = $state('');
+	let inviteOk = $state('');
+
+	function openInvite() {
+		inviteFormError = '';
+		inviteOk = '';
+		inviteTargetId = inviteCandidates[0]?.id ?? null;
+		inviteMessage = '';
+		inviteOpen = true;
+	}
+
+	function closeInvite() {
+		inviteOpen = false;
+	}
+
+	async function submitInvite(e: SubmitEvent) {
+		e.preventDefault();
+		if (!active || inviteSending) return;
+		if (!inviteTargetId) {
+			inviteFormError = $t('projects.invitePickUser');
+			return;
+		}
+		inviteSending = true;
+		inviteFormError = '';
+		try {
+			await inviteProjectMember(active.id, {
+				userId: inviteTargetId,
+				message: inviteMessage.trim()
+			});
+			inviteOk = $t('projects.inviteSent');
+			inviteMessage = '';
+			// 已邀请的人从候选里去掉
+			inviteTargetId = inviteCandidates.find((m) => m.id !== inviteTargetId)?.id ?? null;
+		} catch (err) {
+			inviteFormError = err instanceof ApiError ? err.message : $t('common.failed');
+		} finally {
+			inviteSending = false;
+		}
+	}
+
+	/** 成员头像上的文字：优先 initials，否则取名字首字 */
+	function memberInitials(m: ApiProjectMember) {
+		return (m.initials?.trim() || m.name.slice(0, 1)).toUpperCase();
+	}
+
+	async function kickMember(userId: number) {
+		if (!active) return;
+		inviteError = '';
+		try {
+			await removeProjectMember(active.id, userId);
+		} catch (err) {
+			inviteError = err instanceof ApiError ? err.message : $t('common.failed');
+		}
+	}
 
 	/** 项目列表（后端数据） */
 	const projects = $derived(PROJECTS());
@@ -193,6 +288,29 @@
 
 	/** 当前项目：优先用选中的 id，未选中时回落到第一个 */
 	const active = $derived(projects.find((p) => p.id === activeId) ?? projects[0] ?? null);
+
+	/** 已在该项目里的成员 id，邀请下拉里排除 */
+	const inProjectIds = $derived(new Set((active?.members ?? []).map((m) => m.userId)));
+
+	/** 我是否是当前项目的发起人 */
+	const amOwner = $derived(active?.myRole === 'owner');
+
+	/** 当前项目仍在等待对方回应的邀请 */
+	const activeInvites = $derived(
+		myInvites.filter((i) => i.projectId === active?.id && i.status === 'pending')
+	);
+
+	// 进入页面拉一次邀请；登录后只触发一次，避免自触发循环
+	let invitesLoadedFor = $state<number | null>(null);
+	$effect(() => {
+		const me = ME();
+		if (!me) return;
+		if (invitesLoadedFor === me.id) return;
+		invitesLoadedFor = me.id;
+		// 邀请候选只能来自同团队，进页面时一并拉取
+		loadProjectInvites();
+		loadTeammates();
+	});
 
 	// ===== 任务筛选（二级：先按完成状态，再按时间）=====
 	/** 一级：完成状态 */
@@ -552,6 +670,39 @@
 			<p class="side-sub">{projects.length} 个项目 · {totalTasks} 项任务</p>
 		</header>
 
+		{#if pendingInvites.length}
+			<div class="invite-box">
+				<p class="invite-title">{$t('projects.inviteInbox')}</p>
+				{#each pendingInvites as iv (iv.id)}
+					<div class="invite-row">
+						<div class="invite-info">
+							<span class="invite-proj">{iv.projectLabel}</span>
+							<span class="invite-from"
+								>{$t('projects.inviteFrom', { values: { name: iv.inviterName } })}</span
+							>
+						</div>
+						<div class="invite-acts">
+							<button
+								type="button"
+								class="btn-mini"
+								disabled={inviteBusy === iv.id}
+								onclick={() => respondInvite(iv.id, 'accept')}>{$t('projects.accept')}</button
+							>
+							<button
+								type="button"
+								class="btn-ghost-mini"
+								disabled={inviteBusy === iv.id}
+								onclick={() => respondInvite(iv.id, 'reject')}>{$t('projects.reject')}</button
+							>
+						</div>
+					</div>
+				{/each}
+				{#if inviteError}
+					<p class="invite-err">{inviteError}</p>
+				{/if}
+			</div>
+		{/if}
+
 		<ul class="proj-list">
 			{#each projects as p (p.label)}
 				<li>
@@ -565,6 +716,11 @@
 							<span class="proj-name">{p.label}</span>
 							{#if p.unread && p.tasks.length > 0}
 								<span class="dot-new" title={$t('projects.addTask')}></span>
+							{/if}
+							{#if p.myRole}
+								<span class="proj-role" class:owner={p.myRole === 'owner'}
+									>{p.myRole === 'owner' ? $t('projects.roleOwner') : $t('projects.roleMember')}</span
+								>
 							{/if}
 						</span>
 						<span
@@ -587,7 +743,11 @@
 						>×</span>
 						<span class="proj-row-bottom">
 							<span class="board-tag {p.color}">{p.tag}</span>
-							<span class="proj-count">{p.tasks.length} 项</span>
+							<span class="proj-count"
+								>{(p.tasks ? p.tasks.filter((t) => !t.done).length : Math.max(p.taskTotal - p.taskDone, 0)) +
+									' / ' +
+									(p.tasks ? p.tasks.length : p.taskTotal)}</span
+							>
 						</span>
 					</button>
 				</li>
@@ -940,10 +1100,128 @@
 					{/each}
 				</div>
 			</div>
+
+			<!-- 项目成员：头像列表 + 发起人可邀请 / 移除 -->
+			<div class="field">
+				<div class="member-head">
+					<span class="field-label"
+						>{$t('projects.members')}
+						<span class="member-num">{detail.members.length}</span></span
+					>
+					{#if detail.myRole === 'owner'}
+						<button type="button" class="btn-mini" onclick={openInvite}
+							>{$t('projects.inviteMember')}</button
+						>
+					{/if}
+				</div>
+				<ul class="member-list">
+					{#each detail.members as m (m.userId)}
+						<li class="member-item" class:me={m.userId === ME()?.id}>
+							<span class="member-avatar" style="background:{m.color}">{memberInitials(m)}</span>
+							<div class="member-info">
+								<span class="member-name"
+									>{m.name}{#if m.userId === ME()?.id}<span class="me-badge"
+											>{$t('me.meBadge')}</span
+										>{/if}</span
+								>
+								<span class="member-sub"
+									>{$t('projects.uidLabel')} {m.uid || '—'}{#if m.title || m.role}
+										· {m.title || m.role}{/if}</span
+								>
+							</div>
+							<span class="member-role" class:owner={m.projectRole === 'owner'}
+								>{m.projectRole === 'owner'
+									? $t('projects.roleOwner')
+									: $t('projects.roleMember')}</span
+							>
+							{#if detail.myRole === 'owner' && m.projectRole !== 'owner'}
+								<button
+									type="button"
+									class="member-kick"
+									title={$t('projects.removeMember')}
+									onclick={() => kickMember(m.userId)}>×</button
+								>
+							{/if}
+						</li>
+					{:else}
+						<li class="member-empty">{$t('projects.noMembers')}</li>
+					{/each}
+				</ul>
+				{#if inviteError}
+					<p class="member-err">{inviteError}</p>
+				{/if}
+				{#if activeInvites.length}
+					<p class="member-pending">
+						{$t('projects.pendingInvites', { values: { count: activeInvites.length } })}
+					</p>
+				{/if}
+			</div>
 		</aside>
 	{/if}
 	</div>
 </div>
+
+<!-- 邀请成员抽屉（仅项目发起人） -->
+{#if inviteOpen && active}
+	<div class="backdrop" onclick={closeInvite}></div>
+	<aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="invite-title">
+		<header class="drawer-head">
+			<div>
+				<h2 id="invite-title">{$t('projects.inviteMember')}</h2>
+				<p class="drawer-sub">{$t('projects.inviteSub', { values: { name: active.label } })}</p>
+			</div>
+			<button type="button" class="icon-btn" onclick={closeInvite} aria-label={$t('common.close')}
+				>×</button
+			>
+		</header>
+		<form class="drawer-body" onsubmit={submitInvite}>
+			{#if inviteOk}
+				<p class="invite-note ok">{inviteOk}</p>
+			{/if}
+			{#if inviteFormError}
+				<p class="invite-note err">{inviteFormError}</p>
+			{/if}
+
+			<div class="field">
+				<span class="field-label">{$t('projects.inviteTarget')}</span>
+				<select class="input" bind:value={inviteTargetId} disabled={!inviteCandidates.length}>
+					{#each inviteCandidates as m (m.id)}
+						<option value={m.id}>{m.name}（{m.role}）</option>
+					{:else}
+						<option value={null}>{$t('projects.inviteNoCandidate')}</option>
+					{/each}
+				</select>
+			</div>
+
+			<div class="field">
+				<span class="field-label">{$t('projects.inviteMessage')}</span>
+				<textarea
+					class="input"
+					rows="3"
+					maxlength="255"
+					bind:value={inviteMessage}
+					placeholder={$t('projects.inviteMessagePlaceholder')}
+				></textarea>
+			</div>
+
+			<footer class="drawer-foot">
+				<button type="button" class="btn btn-ghost" onclick={closeInvite}>
+					{$t('common.cancel')}
+				</button>
+				<button
+					type="submit"
+					class="btn btn-primary invite-submit"
+					disabled={inviteSending || !inviteCandidates.length}
+				>
+					{#if inviteSending}
+						<span class="spinner" aria-hidden="true"></span>
+					{/if}
+					{inviteSending ? $t('common.sending') : $t('projects.inviteSubmit')}
+				</button>
+			</footer>
+		</form>
+	</aside>
+{/if}
 
 <!-- 新建项目抽屉 -->
 {#if formOpen}
@@ -1281,6 +1559,180 @@
 		justify-content: space-between;
 		gap: var(--space-2);
 	}
+	/* 项目列表右上角的权限角标 */
+	.proj-role {
+		margin-left: auto;
+		font-size: 0.62rem;
+		font-weight: 700;
+		padding: 1px 7px;
+		border-radius: 20px;
+		letter-spacing: 0.02em;
+		color: var(--text-2);
+		background: rgba(148, 163, 184, 0.16);
+		white-space: nowrap;
+	}
+	.proj-role.owner {
+		color: #fff;
+		background: linear-gradient(135deg, var(--red-500), var(--red-600));
+	}
+
+	/* 待回应的项目邀请 */
+	.invite-box {
+		margin: 0 0 12px;
+		padding: 10px 12px;
+		border: 1px solid var(--red-500);
+		border-radius: 12px;
+		background: rgba(220, 38, 38, 0.06);
+	}
+	.invite-title {
+		margin: 0 0 8px;
+		font-size: 0.76rem;
+		font-weight: 700;
+		color: var(--red-500);
+	}
+	.invite-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 6px 0;
+	}
+	.invite-row + .invite-row {
+		border-top: 1px solid rgba(148, 163, 184, 0.2);
+	}
+	.invite-info {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.invite-proj {
+		font-size: 0.82rem;
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.invite-from {
+		font-size: 0.7rem;
+		color: var(--text-2);
+	}
+	.invite-acts {
+		display: flex;
+		gap: 6px;
+		flex-shrink: 0;
+	}
+	.btn-ghost-mini {
+		font-size: 0.72rem;
+		padding: 3px 9px;
+		border-radius: 8px;
+		border: 1px solid rgba(148, 163, 184, 0.35);
+		background: transparent;
+		color: inherit;
+		cursor: pointer;
+	}
+	.invite-err {
+		margin: 6px 0 0;
+		font-size: 0.72rem;
+		color: var(--red-500);
+	}
+
+	/* 详情里的成员头像列表 */
+	.member-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		margin-bottom: 8px;
+	}
+	.member-num {
+		margin-left: 4px;
+		font-size: 0.7rem;
+		font-weight: 700;
+		color: var(--text-2);
+	}
+	.member-list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.member-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 5px 8px;
+		border-radius: 10px;
+		background: rgba(148, 163, 184, 0.08);
+	}
+	.member-avatar {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		border-radius: 50%;
+		font-size: 0.68rem;
+		font-weight: 800;
+		color: #fff;
+		flex-shrink: 0;
+	}
+	.member-info {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.member-name {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 0.82rem;
+		font-weight: 600;
+	}
+	.member-sub {
+		font-size: 0.7rem;
+		color: var(--text-2);
+	}
+	.member-role {
+		margin-left: auto;
+		font-size: 0.68rem;
+		font-weight: 700;
+		padding: 1px 8px;
+		border-radius: 20px;
+		color: var(--text-2);
+		background: rgba(148, 163, 184, 0.18);
+		white-space: nowrap;
+	}
+	.member-role.owner {
+		color: #fff;
+		background: linear-gradient(135deg, var(--red-500), var(--red-600));
+	}
+	.member-kick {
+		border: none;
+		background: transparent;
+		color: var(--text-2);
+		font-size: 0.95rem;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0 2px;
+	}
+	.member-kick:hover {
+		color: var(--red-500);
+	}
+	.member-empty,
+	.member-pending,
+	.member-err {
+		font-size: 0.75rem;
+		color: var(--text-2);
+	}
+	.member-err {
+		color: var(--red-500);
+	}
+	.member-pending {
+		margin-top: 6px;
+	}
+
 	.proj-count {
 		font-size: 0.74rem;
 		color: var(--text-2);
@@ -1481,6 +1933,72 @@
 	}
 	.btn-ghost:hover {
 		border-color: var(--text-2);
+	}
+	/* 抽屉右上角关闭按钮 */
+	.icon-btn {
+		flex: none;
+		width: 30px;
+		height: 30px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.1rem;
+		line-height: 1;
+		border: 1px solid var(--line-strong);
+		border-radius: 9px;
+		background: transparent;
+		color: var(--text-2);
+		cursor: pointer;
+		transition: color 0.15s, border-color 0.15s, background 0.15s;
+	}
+	.icon-btn:hover {
+		color: var(--text-0);
+		border-color: var(--text-2);
+		background: var(--bg-2);
+	}
+	/* 提交按钮：加载态留出 spinner 位置，禁用时不再发光 */
+	.invite-submit {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		min-width: 112px;
+	}
+	.btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+		box-shadow: none;
+		filter: none;
+	}
+	.spinner {
+		width: 13px;
+		height: 13px;
+		border: 2px solid rgba(255, 255, 255, 0.45);
+		border-top-color: #fff;
+		border-radius: 50%;
+		animation: spin 0.7s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	/* 抽屉内的提示条 */
+	.invite-note {
+		margin: 0;
+		padding: 8px 12px;
+		border-radius: 10px;
+		font-size: 0.8rem;
+	}
+	.invite-note.ok {
+		color: #22c55e;
+		background: rgba(34, 197, 94, 0.1);
+		border: 1px solid rgba(34, 197, 94, 0.35);
+	}
+	.invite-note.err {
+		color: #f87171;
+		background: rgba(239, 68, 68, 0.1);
+		border: 1px solid rgba(239, 68, 68, 0.35);
 	}
 
 	/* ===== 删除项目 ===== */

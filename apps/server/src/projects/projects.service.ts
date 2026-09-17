@@ -1,6 +1,7 @@
 import {
 	BadRequestException,
 	ConflictException,
+	ForbiddenException,
 	Inject,
 	Injectable,
 	NotFoundException,
@@ -11,8 +12,14 @@ import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DB, type Database } from '../db/database.module';
 import { HostingService } from '../hosting/hosting.service';
 import {
+	ProjectMembersService,
+	type ProjectActor
+} from './project-members.service';
+import type { ProjectMemberRole, ProjectMemberView } from './project-members.dto';
+import {
 	projectTasks,
 	projects,
+	users,
 	type NewProjectRow,
 	type ProjectRow,
 	type ProjectTaskRow
@@ -63,16 +70,27 @@ export class ProjectsService {
 		@Inject(DB) private readonly db: Database,
 		// 可选注入：删除项目时顺带清理磁盘上的托管目录。
 		// @Optional 让本服务在缺少 HostingModule 的场景（单测等）仍能实例化。
-		@Optional() private readonly hosting?: HostingService
+		@Optional() private readonly hosting?: HostingService,
+		// 项目成员 / 邀请；单测未挂载模块时允许缺省，成员相关逻辑自动降级为「不限制」
+		@Optional() private readonly members?: ProjectMembersService
 	) {}
 
 	// ===== 项目查询 =====
 
-	async list(query: ListProjectsQuery = {}): Promise<{ total: number; items: ProjectView[] }> {
+	async list(
+		query: ListProjectsQuery = {},
+		viewerId: number | null = null
+	): Promise<{ total: number; items: ProjectView[] }> {
 		const limit = Math.min(Math.max(query.limit ?? 100, 1), 500);
 		const offset = Math.max(query.offset ?? 0, 0);
 
 		const filters = [];
+		// 只有项目成员能看到该项目：按成员关系收窄可见范围
+		if (this.members && viewerId !== null) {
+			const visible = await this.members.projectIdsFor(viewerId);
+			if (!visible.length) return { total: 0, items: [] };
+			filters.push(inArray(projects.id, visible));
+		}
 		if (query.q?.trim()) {
 			const kw = `%${query.q.trim()}%`;
 			filters.push(or(ilike(projects.label, kw), ilike(projects.tag, kw)));
@@ -93,35 +111,45 @@ export class ProjectsService {
 			this.db.select({ count: sql<number>`count(*)::int` }).from(projects).where(where)
 		]);
 
-		// 一次性把所有相关项目的任务查出来，避免 N+1
+		// 一次性把所有相关项目的任务/成员查出来，避免 N+1
 		const ids = rows.map((r) => r.id);
 		const tasks = ids.length ? await this.tasksOfProjects(ids) : new Map<number, ProjectTaskView[]>();
+		const memberMap = await this.membersOf(ids);
+		const roleMap = await this.rolesOf(ids, viewerId);
 
 		return {
 			total: counted[0]?.count ?? 0,
-			items: rows.map((r) => this.toView(r, tasks.get(r.id) ?? []))
+			items: rows.map((r) =>
+				this.toView(r, tasks.get(r.id) ?? [], memberMap.get(r.id) ?? [], roleMap.get(r.id) ?? null)
+			)
 		};
 	}
 
-	async findById(id: number): Promise<ProjectView> {
+	async findById(id: number, viewerId: number | null = null): Promise<ProjectView> {
 		const row = await this.requireRow(id);
+		await this.assertVisible(id, viewerId);
 		const tasks = await this.tasksOfProjects([id]);
-		return this.toView(row, tasks.get(id) ?? []);
+		const memberMap = await this.membersOf([id]);
+		const role = viewerId === null ? null : await this.members?.roleOf(id, viewerId);
+		return this.toView(row, tasks.get(id) ?? [], memberMap.get(id) ?? [], role ?? null);
 	}
 
 	/**
 	 * 按项目名查找；前端历史上用 label 定位，保留此入口方便迁移。
 	 */
-	async findByLabel(label: string): Promise<ProjectView> {
+	async findByLabel(label: string, viewerId: number | null = null): Promise<ProjectView> {
 		const [row] = await this.db.select().from(projects).where(eq(projects.label, label)).limit(1);
 		if (!row) throw new NotFoundException(`项目不存在：${label}`);
+		await this.assertVisible(row.id, viewerId);
 		const tasks = await this.tasksOfProjects([row.id]);
-		return this.toView(row, tasks.get(row.id) ?? []);
+		const memberMap = await this.membersOf([row.id]);
+		const role = viewerId === null ? null : await this.members?.roleOf(row.id, viewerId);
+		return this.toView(row, tasks.get(row.id) ?? [], memberMap.get(row.id) ?? [], role ?? null);
 	}
 
 	// ===== 项目写入 =====
 
-	async create(dto: CreateProjectDto): Promise<ProjectView> {
+	async create(dto: CreateProjectDto, actor: ProjectActor | null = null): Promise<ProjectView> {
 		const label = this.requireLabel(dto.label);
 		await this.assertLabelFree(label);
 
@@ -144,7 +172,12 @@ export class ProjectsService {
 		};
 
 		const [row] = await this.db.insert(projects).values(values).returning();
-		return this.toView(row, []);
+
+		// 创建者即项目发起人，写入成员关系，否则项目对他自己也不可见
+		if (this.members && actor) await this.members.ensureOwner(row.id, actor);
+
+		const memberMap = await this.membersOf([row.id]);
+		return this.toView(row, [], memberMap.get(row.id) ?? [], actor ? 'owner' : null);
 	}
 
 	async update(id: number, dto: UpdateProjectDto): Promise<ProjectView> {
@@ -194,7 +227,8 @@ export class ProjectsService {
 			.where(eq(projects.id, id))
 			.returning();
 		const tasks = await this.tasksOfProjects([id]);
-		return this.toView(row, tasks.get(id) ?? []);
+		const memberMap = await this.membersOf([id]);
+		return this.toView(row, tasks.get(id) ?? [], memberMap.get(id) ?? [], null);
 	}
 
 	// ===== 项目任务 =====
@@ -236,7 +270,7 @@ export class ProjectsService {
 			.set({ unread: true, updatedAt: new Date() })
 			.where(eq(projects.id, projectId));
 
-		return this.toTaskView(row);
+		return this.toTaskView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	/** 更新任务：支持改标题与切换完成状态 */
@@ -262,7 +296,7 @@ export class ProjectsService {
 			.returning();
 
 		await this.touchProject(current.projectId);
-		return this.toTaskView(row);
+		return this.toTaskView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	/** 切换完成状态，返回更新后的任务 */
@@ -274,7 +308,7 @@ export class ProjectsService {
 			.where(eq(projectTasks.id, taskId))
 			.returning();
 		await this.touchProject(current.projectId);
-		return this.toTaskView(row);
+		return this.toTaskView(row, await this.liveAuthorName(row.authorId));
 	}
 
 	async removeTask(taskId: number): Promise<{ id: number; deleted: true }> {
@@ -297,9 +331,22 @@ export class ProjectsService {
 			.where(inArray(projectTasks.projectId, projectIds))
 			.orderBy(asc(projectTasks.id));
 
+		// 发布者名字以 users 表当前值为准：author_name 只是发布时的快照，用户改名后按 id 取新名
+		const authorIds = [
+			...new Set(rows.map((r) => r.authorId).filter((v): v is number => v !== null))
+		];
+		const authorRows = authorIds.length
+			? await this.db
+					.select({ id: users.id, name: users.name })
+					.from(users)
+					.where(inArray(users.id, authorIds))
+			: [];
+		const authorMap = new Map(authorRows.map((a) => [a.id, a.name]));
+
 		for (const r of rows) {
 			const list = map.get(r.projectId) ?? [];
-			list.push(this.toTaskView(r));
+			const name = r.authorId === null ? undefined : authorMap.get(r.authorId);
+			list.push(this.toTaskView(r, name));
 			map.set(r.projectId, list);
 		}
 		return map;
@@ -399,7 +446,40 @@ export class ProjectsService {
 		return ui as ProjectUI;
 	}
 
-	private toTaskView(row: ProjectTaskRow): ProjectTaskView {
+	/** 批量取项目的成员；成员服务缺省时返回空表 */
+	private async membersOf(ids: number[]): Promise<Map<number, ProjectMemberView[]>> {
+		if (!this.members || !ids.length) return new Map();
+		return this.members.membersOfProjects(ids);
+	}
+
+	/** 批量取当前用户在若干项目里的身份 */
+	private async rolesOf(
+		ids: number[],
+		viewerId: number | null
+	): Promise<Map<number, ProjectMemberRole>> {
+		if (!this.members || viewerId === null || !ids.length) return new Map();
+		return this.members.rolesOf(ids, viewerId);
+	}
+
+	/** 非成员不得查看项目详情；未登录或成员服务缺省时不拦截 */
+	private async assertVisible(projectId: number, viewerId: number | null): Promise<void> {
+		if (!this.members || viewerId === null) return;
+		const role = await this.members.roleOf(projectId, viewerId);
+		if (!role) throw new ForbiddenException('你不是该项目成员，无权查看');
+	}
+
+	/** 单个用户改名后的实时名字；无作者或用户已删除时返回 undefined，回退到快照 */
+	private async liveAuthorName(authorId: number | null): Promise<string | undefined> {
+		if (authorId === null) return undefined;
+		const [row] = await this.db
+			.select({ name: users.name })
+			.from(users)
+			.where(eq(users.id, authorId))
+			.limit(1);
+		return row?.name;
+	}
+
+	private toTaskView(row: ProjectTaskRow, liveAuthorName?: string): ProjectTaskView {
 		// 前端原格式是 date + ago 两个现成字符串，这里在后端算好，避免前端各处重复格式化
 		const created = row.createdAt;
 		return {
@@ -408,14 +488,19 @@ export class ProjectsService {
 			title: row.title,
 			done: row.done,
 			category: row.category as TaskCategory,
-			author: row.authorName,
+			author: liveAuthorName || row.authorName,
 			date: humanDate(created),
 			ago: humanAgo(created),
 			createdAt: created.toISOString()
 		};
 	}
 
-	private toView(row: ProjectRow, tasks: ProjectTaskView[]): ProjectView {
+	private toView(
+		row: ProjectRow,
+		tasks: ProjectTaskView[],
+		members: ProjectMemberView[] = [],
+		myRole: ProjectMemberRole | null = null
+	): ProjectView {
 		return {
 			id: row.id,
 			label: row.label,
@@ -436,6 +521,9 @@ export class ProjectsService {
 			tasks,
 			taskTotal: tasks.length,
 			taskDone: tasks.filter((t) => t.done).length,
+			members,
+			memberCount: members.length,
+			myRole,
 			createdAt: row.createdAt.toISOString(),
 			updatedAt: row.updatedAt.toISOString()
 		};
