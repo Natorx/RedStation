@@ -306,7 +306,12 @@
 					<div class="board-meta">
 						<span class="mini-avatars"></span>
 						<span class="board-count"
-							>{b.tasks.length > 0 ? b.tasks.length + ' 项任务' : '暂无任务'}</span
+							>{(b.tasks
+								? b.tasks.filter((t) => !t.done).length
+								: Math.max(b.taskTotal - b.taskDone, 0)) > 0
+								? (b.tasks ? b.tasks.filter((t) => !t.done).length : Math.max(b.taskTotal - b.taskDone, 0)) +
+									' 项未完成'
+								: '全部完成'}</span
 						>
 					</div>
 				</button>
